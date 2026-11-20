@@ -8,6 +8,7 @@ import { DEFAULT_FILE_COLORS, validateFileColors, type FileColorSettings } from 
 import { validateScopes, type NamedScope } from "@/platform/scopes";
 import { validateCMake } from "@/platform/cmakeSettings";
 import { SUPPORTED_LOCALES, type Locale } from "@/platform/i18n";
+import { defaultPreset } from "@/platform/keymap";
 import { DEFAULT_IGNORED_NAMES } from "@/platform/ignoredNames";
 import { validateFileTypeOverrides, validateFileTypes, type FileTypeAssociations } from "@/platform/fileTypes";
 import type { AgentSettings, LanguageServerSettings, Settings } from "@/platform/ipc";
@@ -203,7 +204,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     colorScheme: "theme-default",
     ...EDITOR_EXTRA_DEFAULTS,
   },
-  keymap: "intellij-macos",
+  keymap: defaultPreset(),
   files: {
     autoSave: true,
     syncOnFocus: true,

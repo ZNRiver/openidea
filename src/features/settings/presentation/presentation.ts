@@ -21,11 +21,11 @@ export interface PresentedAction {
   alternate?: { keymap: string; shortcut: string };
 }
 
-/** The same keymap family on the other platform (`intellij-macos` ⇄ `intellij-windows`). */
+/** The same keymap family on the other platform (`vscode-macos` ⇄ `vscode-windows`). */
 export function alternatePreset(preset: string, mac: boolean): string {
   const swapped = mac ? preset.replace(/-macos$/, "-windows") : preset.replace(/-windows$/, "-macos");
   if (swapped !== preset && swapped in PRESETS) return swapped;
-  return mac ? "intellij-windows" : "intellij-macos";
+  return mac ? "vscode-windows" : "vscode-macos";
 }
 
 export function presentAction(id: string, alternateKeymap: boolean, mac = isMacHost()): PresentedAction | null {

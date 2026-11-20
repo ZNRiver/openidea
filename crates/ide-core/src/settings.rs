@@ -558,9 +558,9 @@ impl Default for Settings {
     }
 }
 
-/// IDEA's keymap for the OS (`src/platform/keymaps/`).
+/// VS Code's keymap for the OS (`src/platform/keymaps/`).
 fn default_keymap() -> &'static str {
-    if cfg!(target_os = "macos") { "intellij-macos" } else { "intellij-windows" }
+    if cfg!(target_os = "macos") { "vscode-macos" } else { "vscode-windows" }
 }
 
 /// A named set of files: `file:src//*.ts && !file:*.test.ts` (project-relative path patterns

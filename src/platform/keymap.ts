@@ -29,9 +29,9 @@ export type Keymap = Record<string, string[]>;
 /** macOS spells the primary modifier ⌘ (`Meta`); Windows and Linux use Ctrl. */
 export const isMacHost = () => usePlatform.getState().os === "macos";
 
-/** The preset used when settings name none (or an unknown one): IDEA's keymap for this OS. */
+/** The preset used when settings name none (or an unknown one): VS Code's keymap for this OS. */
 export function defaultPreset(): string {
-  return isMacHost() ? "intellij-macos" : "intellij-windows";
+  return isMacHost() ? "vscode-macos" : "vscode-windows";
 }
 
 export const PRESETS: Record<string, Keymap> = {
