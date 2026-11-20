@@ -1,0 +1,279 @@
+name: Release Build
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: release-build
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            platform: linux
+            arch: x64
+            server_os: linux
+            server_arch: x86_64
+          - name: linux-arm64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            platform: linux
+            arch: arm64
+            server_os: linux
+            server_arch: aarch64
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows
+            arch: x64
+            server_os: ""
+            server_arch: ""
+          - name: windows-arm64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            platform: windows
+            arch: arm64
+            server_os: ""
+            server_arch: ""
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            platform: macos
+            arch: arm64
+            server_os: macos
+            server_arch: aarch64
+          - name: macos-x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            platform: macos
+            arch: x64
+            server_os: macos
+            server_arch: x86_64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            cmake \
+            curl \
+            wget \
+            file \
+            libdbus-1-dev \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libgtk-3-dev \
+            patchelf \
+            rpm \
+            pkg-config
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+
+      - name: Build desktop application
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          NODE_OPTIONS: "--max-old-space-size=4096"
+        run: pnpm exec tauri build --target ${{ matrix.target }}
+
+      - name: Build openidea-server
+        if: matrix.server_os != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --target ${{ matrix.target }} -p ide-host --bin openidea-server
+          mkdir -p release-assets
+          asset="openidea-server-${{ matrix.server_os }}-${{ matrix.server_arch }}.gz"
+          gzip -9 -c "target/${{ matrix.target }}/release/openidea-server" > "release-assets/${asset}"
+          (
+            cd release-assets
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "${asset}" > "${asset}.sha256"
+            else
+              shasum -a 256 "${asset}" > "${asset}.sha256"
+            fi
+          )
+
+      - name: Collect Windows artifacts
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          $releaseDir = "target/${{ matrix.target }}/release"
+          $bundleDir = "$releaseDir/bundle"
+
+          $portableStage = "portable-stage"
+          New-Item -ItemType Directory -Force -Path $portableStage | Out-Null
+          Copy-Item "$releaseDir/openidea.exe" "$portableStage/openidea.exe"
+          if (Test-Path "$releaseDir/WebView2Loader.dll") {
+            Copy-Item "$releaseDir/WebView2Loader.dll" "$portableStage/WebView2Loader.dll"
+          }
+          Compress-Archive -Path "$portableStage/*" -DestinationPath "release-assets/OpenIDEA-windows-${{ matrix.arch }}-portable.zip" -Force
+
+          $nsis = Get-ChildItem "$bundleDir/nsis/*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($nsis) {
+            Copy-Item $nsis.FullName "release-assets/OpenIDEA-windows-${{ matrix.arch }}-setup.exe"
+          }
+
+          $msi = Get-ChildItem "$bundleDir/msi/*.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($msi) {
+            Copy-Item $msi.FullName "release-assets/OpenIDEA-windows-${{ matrix.arch }}.msi"
+          }
+
+          Get-ChildItem release-assets
+
+      - name: Collect Linux artifacts
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          release_dir="target/${{ matrix.target }}/release"
+          bundle_dir="${release_dir}/bundle"
+
+          tar -C "${release_dir}" -czf "release-assets/OpenIDEA-linux-${{ matrix.arch }}-portable.tar.gz" openidea
+
+          appimage=$(find "${bundle_dir}/appimage" -maxdepth 1 -name '*.AppImage' 2>/dev/null | head -n 1 || true)
+          if [ -n "${appimage}" ]; then
+            cp "${appimage}" "release-assets/OpenIDEA-linux-${{ matrix.arch }}.AppImage"
+          fi
+
+          deb=$(find "${bundle_dir}/deb" -maxdepth 1 -name '*.deb' 2>/dev/null | head -n 1 || true)
+          if [ -n "${deb}" ]; then
+            cp "${deb}" "release-assets/OpenIDEA-linux-${{ matrix.arch }}.deb"
+          fi
+
+          rpm=$(find "${bundle_dir}/rpm" -maxdepth 1 -name '*.rpm' 2>/dev/null | head -n 1 || true)
+          if [ -n "${rpm}" ]; then
+            cp "${rpm}" "release-assets/OpenIDEA-linux-${{ matrix.arch }}.rpm"
+          fi
+
+          ls -la release-assets
+
+      - name: Collect macOS artifacts
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          bundle_dir="target/${{ matrix.target }}/release/bundle"
+
+          if [ -d "${bundle_dir}/macos/OpenIDEA.app" ]; then
+            tar -C "${bundle_dir}/macos" -czf "release-assets/OpenIDEA-macos-${{ matrix.arch }}.app.tar.gz" OpenIDEA.app
+          fi
+
+          dmg=$(find "${bundle_dir}/dmg" -maxdepth 1 -name '*.dmg' 2>/dev/null | head -n 1 || true)
+          if [ -n "${dmg}" ]; then
+            cp "${dmg}" "release-assets/OpenIDEA-macos-${{ matrix.arch }}.dmg"
+          fi
+
+          ls -la release-assets
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.name }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish rolling release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist-release
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS.txt
+        working-directory: dist-release
+        run: |
+          sha256sum * > ../SHA256SUMS.txt
+          mv ../SHA256SUMS.txt .
+          ls -la
+
+      - name: Overwrite rolling 'latest' release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="latest"
+
+          # Delete previous rolling release so stale assets are never kept
+          gh release delete "${TAG}" --yes || true
+
+          # Force-move the single 'latest' tag to the current commit
+          git tag -f "${TAG}" "${GITHUB_SHA}"
+          git push -f origin "refs/tags/${TAG}"
+
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          BUILD_DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
+          COMMIT_MSG="$(git log -1 --pretty=%s "${GITHUB_SHA}")"
+
+          cat <<EOF > release-notes.md
+          Rolling build automatically overwritten on every push (no versioning).
+
+          - **Commit:** \`${SHORT_SHA}\` — ${COMMIT_MSG}
+          - **Branch:** \`${GITHUB_REF_NAME}\`
+          - **Built at:** ${BUILD_DATE}
+          - **Defaults:** VS Code keymap preset & portable storage next to the executable (\`./config\`, \`./data\`, \`./logs\`)
+          EOF
+
+          gh release create "${TAG}" dist-release/* \
+            --title "OpenIDEA (Latest Build)" \
+            --notes-file release-notes.md \
+            --latest
