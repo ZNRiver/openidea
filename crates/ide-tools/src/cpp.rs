@@ -466,7 +466,7 @@ impl Tools {
         &self,
         provider: &str,
         display_name: &str,
-        repo: &str,
+        repo: &'static str,
         assets: &[AssetRule],
         (c_cmd, cxx_cmd): (&str, &str),
         location: &Path,
