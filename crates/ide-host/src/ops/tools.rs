@@ -7,6 +7,7 @@ use ide_core::{IdeError, IdeResult, RequestId};
 use ide_sdk::Sdk;
 use ide_tools::cpp::CppProvider;
 use ide_tools::jdk::{JdkReleases, JdkVendor};
+use ide_tools::toolchain::{DownloadedToolchain, ToolchainProvider};
 use ide_tools::{InstallEvent, ToolInfo, ToolUpdate, Tools};
 use std::path::PathBuf;
 
@@ -251,6 +252,46 @@ pub async fn cpp_download(
     Ok(sdk)
 }
 
+/// Language SDK / runtime distributions available for download on this platform.
+#[command(trust = always)]
+pub fn toolchain_download_providers(runtime: Option<String>) -> Vec<ToolchainProvider> {
+    ide_tools::toolchain::providers(runtime.as_deref())
+}
+
+/// Where Download SDK / Toolchain puts downloaded runtimes unless told otherwise.
+#[command(trust = always)]
+pub fn toolchain_download_location(host: &Host) -> IdeResult<ide_core::IpcPath> {
+    Ok(ide_tools::toolchain::sdks_dir(&host.local_data_dir).into())
+}
+
+/// Downloads a language SDK / runtime (`uv`, `node-lts`, `rustup-stable`, `go`, `zig`,
+/// `dotnet-lts`, `php`, `dart`, `flutter`, `maven`, `gradle`, …) into `location`
+/// (default: [`toolchain_download_location`]) and registers it in user environment variables.
+/// Streams progress through `on_event`; cancellable with `cancel_request(request)`.
+#[command(trust = always)]
+pub async fn toolchain_download(
+    host: &Host,
+    provider: String,
+    location: Option<PathBuf>,
+    request: RequestId,
+    on_event: Channel<InstallEvent>,
+) -> IdeResult<DownloadedToolchain> {
+    let tools = Tools::new(&host.local_data_dir).with_downloads(host.global_settings.effective().tool_downloads);
+    let location = location.filter(|p| !p.as_os_str().is_empty());
+    let cancel = host.begin_request(request);
+    let result = tokio::task::spawn_blocking(move || {
+        tools.download_toolchain(&provider, location.as_deref(), &cancel, &|e| {
+            let _ = on_event.send(e);
+        })
+    })
+    .await
+    .map_err(join_err);
+    host.end_request(request);
+    let downloaded = result??;
+    reconfigure_servers(host);
+    Ok(downloaded)
+}
+
 ide_command::domain!(
     tools:
     cpp_download,
@@ -261,6 +302,9 @@ ide_command::domain!(
     jdk_download_releases,
     jdk_download_vendors,
     jdtls_required_java,
+    toolchain_download,
+    toolchain_download_location,
+    toolchain_download_providers,
     tools_install,
     tools_list,
     tools_uninstall,

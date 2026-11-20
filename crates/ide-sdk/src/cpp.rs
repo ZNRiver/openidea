@@ -50,6 +50,28 @@ pub struct CppToolchainEnv {
     pub include_dirs: Vec<PathBuf>,
     pub lib_dirs: Vec<PathBuf>,
     pub is_msvc: bool,
+    /// True when the standalone Windows SDK sysroot contains debug CRT import libraries (`msvcrtd.lib`).
+    pub has_debug_libs: bool,
+    /// True when the standalone Windows SDK sysroot contains static debug CRT libraries (`libcmtd.lib`).
+    pub has_static_debug_libs: bool,
+}
+
+fn dir_has_file_ci(dir: &Path, expected: &str) -> bool {
+    if dir.join(expected).is_file() {
+        return true;
+    }
+    std::fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(expected))
+}
+
+fn winsysroot_debug_libs(lib_dirs: &[PathBuf]) -> (bool, bool) {
+    let has_dynamic = lib_dirs.iter().any(|d| dir_has_file_ci(d, "msvcrtd.lib"));
+    let has_static = lib_dirs.iter().any(|d| dir_has_file_ci(d, "libcmtd.lib"));
+    (has_dynamic, has_static)
 }
 
 fn read_manifest(dir: &Path) -> Option<ToolchainManifest> {
@@ -208,6 +230,7 @@ pub fn toolchain_env(path: &Path) -> Option<CppToolchainEnv> {
         let arch = manifest.arch.as_deref().unwrap_or(current_win_arch());
         let (include_dirs, lib_dirs) =
             winsysroot.as_deref().map(|s| winsysroot_dirs(s, arch)).unwrap_or_default();
+        let (has_debug_libs, has_static_debug_libs) = winsysroot_debug_libs(&lib_dirs);
         return Some(CppToolchainEnv {
             home: path.to_path_buf(),
             bin_dir,
@@ -217,6 +240,8 @@ pub fn toolchain_env(path: &Path) -> Option<CppToolchainEnv> {
             include_dirs,
             lib_dirs,
             is_msvc: manifest.provider == "msvc-buildtools",
+            has_debug_libs,
+            has_static_debug_libs,
         });
     }
 
@@ -231,6 +256,8 @@ pub fn toolchain_env(path: &Path) -> Option<CppToolchainEnv> {
             include_dirs: Vec::new(),
             lib_dirs: Vec::new(),
             is_msvc: true,
+            has_debug_libs: true,
+            has_static_debug_libs: true,
         });
     }
 
@@ -266,6 +293,7 @@ pub fn toolchain_env(path: &Path) -> Option<CppToolchainEnv> {
     let winsysroot = Some(home.join("winsysroot")).filter(|p| p.is_dir());
     let (include_dirs, lib_dirs) =
         winsysroot.as_deref().map(|s| winsysroot_dirs(s, current_win_arch())).unwrap_or_default();
+    let (has_debug_libs, has_static_debug_libs) = winsysroot_debug_libs(&lib_dirs);
 
     Some(CppToolchainEnv {
         home,
@@ -276,6 +304,8 @@ pub fn toolchain_env(path: &Path) -> Option<CppToolchainEnv> {
         include_dirs,
         lib_dirs,
         is_msvc,
+        has_debug_libs,
+        has_static_debug_libs,
     })
 }
 

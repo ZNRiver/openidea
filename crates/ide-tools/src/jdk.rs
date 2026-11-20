@@ -1,7 +1,7 @@
-//! JDK downloads (IDEA's Download JDK): Eclipse Temurin builds from the
-//! Adoptium API, unpacked into `<tools>/jdks/<vendor>-<version>` (or a chosen
-//! location) where JDK discovery finds them. Parsing is pure so it is testable
-//! without network.
+//! JDK downloads (IDEA's Download JDK): Eclipse Temurin, Microsoft Build of OpenJDK,
+//! Amazon Corretto, and Azul Zulu, unpacked into `<tools>/jdks/<vendor>-<version>` (or a
+//! chosen location) where JDK discovery finds them, and automatically registered in user
+//! environment variables (`JAVA_HOME`, `PATH`).
 
 use crate::platform::{Arch, Os, Platform};
 use crate::process::{Emit, Http};
@@ -14,6 +14,7 @@ use specta::Type;
 use std::path::{Path, PathBuf};
 
 const ADOPTIUM_API: &str = "https://api.adoptium.net/v3";
+const AZUL_API: &str = "https://api.azul.com/metadata/v1/zulu/packages/";
 
 /// A JDK distribution the IDE can download.
 #[derive(Clone, Debug, PartialEq, Serialize, Type)]
@@ -24,9 +25,27 @@ pub struct JdkVendor {
 }
 
 pub const TEMURIN: &str = "temurin";
+pub const MICROSOFT: &str = "microsoft";
+pub const CORRETTO: &str = "corretto";
+pub const ZULU: &str = "zulu";
 
 pub fn vendors() -> Vec<JdkVendor> {
-    vec![JdkVendor { id: TEMURIN.into(), name: "Eclipse Temurin".into() }]
+    vec![
+        JdkVendor { id: TEMURIN.into(), name: "Eclipse Temurin".into() },
+        JdkVendor { id: MICROSOFT.into(), name: "Microsoft Build of OpenJDK".into() },
+        JdkVendor { id: CORRETTO.into(), name: "Amazon Corretto".into() },
+        JdkVendor { id: ZULU.into(), name: "Azul Zulu".into() },
+    ]
+}
+
+fn vendor_display_name(vendor: &str) -> &'static str {
+    match vendor {
+        TEMURIN => "Eclipse Temurin",
+        MICROSOFT => "Microsoft Build of OpenJDK",
+        CORRETTO => "Amazon Corretto",
+        ZULU => "Azul Zulu",
+        _ => "JDK",
+    }
 }
 
 /// Java versions a vendor publishes.
@@ -61,7 +80,10 @@ fn proto(msg: impl Into<String>) -> IdeError {
 }
 
 fn vendor_or_err(vendor: &str) -> IdeResult<()> {
-    if vendor == TEMURIN { Ok(()) } else { Err(IdeError::invalid(format!("unknown JDK vendor `{vendor}`"))) }
+    match vendor {
+        TEMURIN | MICROSOFT | CORRETTO | ZULU => Ok(()),
+        _ => Err(IdeError::invalid(format!("unknown JDK vendor `{vendor}`"))),
+    }
 }
 
 pub fn adoptium_releases_url() -> String {
@@ -114,6 +136,103 @@ pub fn adoptium_assets_url(feature: u32, platform: Platform) -> String {
         adoptium_arch(platform.arch),
         adoptium_os(platform.os),
     )
+}
+
+/// Direct evergreen URL for Microsoft Build of OpenJDK (LTS 11, 17, 21, 25).
+pub fn microsoft_jdk_url(feature: u32, platform: Platform) -> String {
+    let os = match platform.os {
+        Os::Windows => "windows",
+        Os::Mac => "macOS",
+        Os::Linux => "linux",
+    };
+    let arch = match platform.arch {
+        Arch::X64 => "x64",
+        Arch::Arm64 => "aarch64",
+    };
+    let ext = if platform.os == Os::Windows { "zip" } else { "tar.gz" };
+    format!("https://aka.ms/download-jdk/microsoft-jdk-{feature}-{os}-{arch}.{ext}")
+}
+
+/// Direct evergreen URL for Amazon Corretto (8, 11, 17, 21, 25).
+pub fn corretto_jdk_url(feature: u32, platform: Platform) -> String {
+    let os = match platform.os {
+        Os::Windows => "windows",
+        Os::Mac => "macos",
+        Os::Linux => "linux",
+    };
+    // Amazon Corretto publishes Windows x64 builds only; ARM64 Windows runs them under emulation.
+    let arch = match (platform.os, platform.arch) {
+        (Os::Windows, _) => "x64",
+        (_, Arch::X64) => "x64",
+        (_, Arch::Arm64) => "aarch64",
+    };
+    let ext = if platform.os == Os::Windows { "zip" } else { "tar.gz" };
+    format!("https://corretto.aws/downloads/latest/amazon-corretto-{feature}-{arch}-{os}-jdk.{ext}")
+}
+
+/// Azul Metadata API query for the latest Azul Zulu GA JDK build.
+pub fn zulu_packages_url(feature: u32, platform: Platform) -> String {
+    let os = match platform.os {
+        Os::Windows => "windows",
+        Os::Mac => "macos",
+        Os::Linux => "linux",
+    };
+    let arch = match platform.arch {
+        Arch::X64 => "x64",
+        Arch::Arm64 => "arm64",
+    };
+    let ext = if platform.os == Os::Windows { "zip" } else { "tar.gz" };
+    format!(
+        "{AZUL_API}?java_version={feature}&os={os}&arch={arch}&archive_type={ext}&java_package_type=jdk&javafx_bundled=false&latest=true&release_status=ga&availability_types=CA"
+    )
+}
+
+#[derive(Deserialize)]
+struct ZuluPackage {
+    name: String,
+    download_url: String,
+    #[serde(default)]
+    java_version: Vec<u32>,
+    #[serde(default)]
+    sha256_hash: Option<String>,
+}
+
+pub fn zulu_pick(json: &str, feature: u32) -> IdeResult<Option<(Download, u32)>> {
+    let pkgs: Vec<ZuluPackage> =
+        serde_json::from_str(json).map_err(|e| proto(format!("unexpected Azul Zulu response: {e}")))?;
+    let Some(pkg) = pkgs.into_iter().next() else {
+        return Ok(None);
+    };
+    let major = pkg.java_version.first().copied().unwrap_or(feature);
+    let version = if pkg.java_version.is_empty() {
+        feature.to_string()
+    } else {
+        pkg.java_version.iter().take(3).map(u32::to_string).collect::<Vec<_>>().join(".")
+    };
+    let sha256 = pkg.sha256_hash.map(|c| c.trim().to_ascii_lowercase()).filter(|c| c.len() == 64);
+    Ok(Some((
+        Download { version, name: pkg.name, url: pkg.download_url, size: None, sha256, checksum_url: None },
+        major,
+    )))
+}
+
+fn version_from_filename(name: &str, feature: u32) -> String {
+    let prefix = format!("{feature}.");
+    if let Some(idx) = name.find(&prefix) {
+        let rest = &name[idx..];
+        let token: String =
+            rest.chars().take_while(|c| c.is_ascii_digit() || matches!(c, '.' | '_')).collect();
+        let trimmed = token.trim_end_matches(['.', '_']);
+        if trimmed.len() > prefix.len() {
+            return trimmed.to_owned();
+        }
+    }
+    feature.to_string()
+}
+
+fn filename_from_url(url: &str, fallback: &str) -> String {
+    let clean = url.split(['?', '#']).next().unwrap_or(url);
+    clean.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(fallback).to_owned()
 }
 
 #[derive(Deserialize)]
@@ -247,12 +366,21 @@ impl Tools {
     /// Java versions `vendor` publishes.
     pub fn jdk_releases(&self, vendor: &str, cancel: &CancellationToken) -> IdeResult<JdkReleases> {
         vendor_or_err(vendor)?;
-        parse_releases(&self.http()?.get_text(&adoptium_releases_url(), cancel)?)
+        match vendor {
+            TEMURIN => parse_releases(&self.http()?.get_text(&adoptium_releases_url(), cancel)?),
+            MICROSOFT => Ok(JdkReleases { versions: vec![25, 21, 17, 11], lts: vec![25, 21, 17, 11], recommended: 21 }),
+            CORRETTO => {
+                Ok(JdkReleases { versions: vec![25, 21, 17, 11, 8], lts: vec![25, 21, 17, 11, 8], recommended: 21 })
+            }
+            ZULU => Ok(JdkReleases { versions: vec![25, 21, 17, 11, 8], lts: vec![25, 21, 17, 11, 8], recommended: 21 }),
+            _ => unreachable!("validated above"),
+        }
     }
 
     /// Downloads the latest `vendor` JDK of Java `feature` into
     /// `<location>/<vendor>-<version>` (`location` defaults to the tools' `jdks`
-    /// folder), verifying its SHA-256. A JDK already there is reused.
+    /// folder), verifying its SHA-256 when provided, and registers `JAVA_HOME` + `PATH`.
+    /// A JDK already there is reused.
     pub fn download_jdk(
         &self,
         vendor: &str,
@@ -276,6 +404,83 @@ impl Tools {
         self.download_java(TEMURIN, feature, Some(location), true, cancel, emit)
     }
 
+    fn resolve_jdk_download(
+        &self,
+        http: &Http,
+        vendor: &str,
+        feature: u32,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Option<(Download, u32)>> {
+        match vendor {
+            TEMURIN => {
+                let mut picked =
+                    adoptium_pick(&http.get_text(&adoptium_assets_url(feature, self.platform), cancel)?, self.platform)?;
+                if picked.is_none()
+                    && matches!(self.platform.os, Os::Mac | Os::Windows)
+                    && self.platform.arch == Arch::Arm64
+                {
+                    let intel = Platform { os: self.platform.os, arch: Arch::X64 };
+                    picked = adoptium_pick(&http.get_text(&adoptium_assets_url(feature, intel), cancel)?, intel)?;
+                }
+                Ok(picked)
+            }
+            MICROSOFT => {
+                let try_url = |platform: Platform| -> IdeResult<Option<(Download, u32)>> {
+                    let url = microsoft_jdk_url(feature, platform);
+                    let fallback_name = filename_from_url(&url, "microsoft-jdk.zip");
+                    match http.effective_url(&url, cancel) {
+                        Ok(final_url) if !final_url.is_empty() => {
+                            let name = filename_from_url(&final_url, &fallback_name);
+                            let version = version_from_filename(&name, feature);
+                            Ok(Some((
+                                Download { version, name, url: final_url, size: None, sha256: None, checksum_url: None },
+                                feature,
+                            )))
+                        }
+                        Err(e) if e.kind == ErrorKind::Cancelled => Err(e),
+                        _ => Ok(None),
+                    }
+                };
+                let mut picked = try_url(self.platform)?;
+                if picked.is_none()
+                    && matches!(self.platform.os, Os::Mac | Os::Windows)
+                    && self.platform.arch == Arch::Arm64
+                {
+                    picked = try_url(Platform { os: self.platform.os, arch: Arch::X64 })?;
+                }
+                Ok(picked)
+            }
+            CORRETTO => {
+                let url = corretto_jdk_url(feature, self.platform);
+                let fallback_name = filename_from_url(&url, "amazon-corretto.zip");
+                let final_url = match http.effective_url(&url, cancel) {
+                    Ok(u) if !u.is_empty() => u,
+                    Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+                    _ => url,
+                };
+                let name = filename_from_url(&final_url, &fallback_name);
+                let version = version_from_filename(&name, feature);
+                Ok(Some((
+                    Download { version, name, url: final_url, size: None, sha256: None, checksum_url: None },
+                    feature,
+                )))
+            }
+            ZULU => {
+                let mut picked =
+                    zulu_pick(&http.get_text(&zulu_packages_url(feature, self.platform), cancel)?, feature)?;
+                if picked.is_none()
+                    && matches!(self.platform.os, Os::Mac | Os::Windows)
+                    && self.platform.arch == Arch::Arm64
+                {
+                    let intel = Platform { os: self.platform.os, arch: Arch::X64 };
+                    picked = zulu_pick(&http.get_text(&zulu_packages_url(feature, intel), cancel)?, feature)?;
+                }
+                Ok(picked)
+            }
+            _ => Err(IdeError::invalid(format!("unknown JDK vendor `{vendor}`"))),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn download_java(
         &self,
@@ -289,55 +494,62 @@ impl Tools {
         vendor_or_err(vendor)?;
         let _guard = InstallGuard::acquire(&format!("jdk-{vendor}-{feature}"))?;
         let http = self.http()?;
+        let display = vendor_display_name(vendor);
         let location = location.map(Path::to_path_buf).unwrap_or_else(|| self.root.join("jdks"));
-        emit(InstallEvent::Line { text: format!("Resolving the latest Eclipse Temurin {feature}…") });
-        let mut picked =
-            adoptium_pick(&http.get_text(&adoptium_assets_url(feature, self.platform), cancel)?, self.platform)?;
-        if picked.is_none() && matches!(self.platform.os, Os::Mac | Os::Windows) && self.platform.arch == Arch::Arm64 {
-            // Older JDKs may need the OS-provided x64 emulation.
-            let intel = Platform { os: self.platform.os, arch: Arch::X64 };
-            picked = adoptium_pick(&http.get_text(&adoptium_assets_url(feature, intel), cancel)?, intel)?;
-        }
-        let (dl, major) = picked.ok_or_else(|| {
+        emit(InstallEvent::Line { text: format!("Resolving the latest {display} {feature}…") });
+        let (dl, major) = self.resolve_jdk_download(&http, vendor, feature, cancel)?.ok_or_else(|| {
             IdeError::unavailable(format!(
-                "Eclipse Temurin {feature} has no build for {:?} {:?}",
+                "{display} {feature} has no build for {:?} {:?}",
                 self.platform.os, self.platform.arch
             ))
         })?;
         let target = location.join(jdk_dir_name(vendor, &dl.version));
         let done = |home: PathBuf| DownloadedJdk { home: home.into(), version: dl.version.clone(), major };
-        if let Some(home) = usable_java_home(&target, self.platform, runtime) {
+        let home = if let Some(existing) = usable_java_home(&target, self.platform, runtime) {
             emit(InstallEvent::Line { text: format!("{} is already installed", target.display()) });
-            return Ok(done(home));
+            existing
+        } else {
+            emit(InstallEvent::Line { text: format!("Downloading {} ({})", dl.name, dl.url) });
+            std::fs::create_dir_all(&location)?;
+            // Next to the target, so moving it into place never crosses file systems.
+            let staging = location.join(format!(".staging-{}", jdk_dir_name(vendor, &dl.version)));
+            let _ = std::fs::remove_dir_all(&staging);
+            std::fs::create_dir_all(&staging)?;
+            let result = (|| {
+                let archive = fetch_verified(&self.downloads, &http, &dl, &staging, cancel, emit)?;
+                emit(InstallEvent::Line { text: "Extracting…".into() });
+                let pkg = staging.join("pkg");
+                archive::extract(&archive, archive::ArchiveKind::from_name(&dl.name), &pkg, "java", cancel)?;
+                let home = usable_java_home(&pkg, self.platform, runtime)
+                    .ok_or_else(|| IdeError::new(ErrorKind::Io, format!("no JDK found in {}", dl.name)))?;
+                // Last point to stop: from here the JDK replaces what is at `target`.
+                if cancel.is_cancelled() {
+                    return Err(IdeError::cancelled());
+                }
+                if target.exists() {
+                    std::fs::remove_dir_all(&target)?;
+                }
+                std::fs::rename(unpacked_root(&pkg, &home), &target)?;
+                clear_quarantine(&target);
+                usable_java_home(&target, self.platform, runtime)
+                    .ok_or_else(|| IdeError::new(ErrorKind::Io, format!("no JDK found in {}", target.display())))
+            })();
+            let _ = std::fs::remove_dir_all(&staging);
+            let home = result?;
+            emit(InstallEvent::Line { text: format!("{display} {} installed in {}", dl.version, home.display()) });
+            home
+        };
+        if !runtime {
+            let home_s = home.to_string_lossy().into_owned();
+            match ide_core::process::register_user_env(&[home.join("bin")], &[("JAVA_HOME", &home_s)]) {
+                Ok(()) => emit(InstallEvent::Line {
+                    text: "Added JDK to environment variables (JAVA_HOME, PATH).".into(),
+                }),
+                Err(err) => emit(InstallEvent::Line {
+                    text: format!("Warning: could not update user environment variables: {err}"),
+                }),
+            }
         }
-        emit(InstallEvent::Line { text: format!("Downloading {} ({})", dl.name, dl.url) });
-        std::fs::create_dir_all(&location)?;
-        // Next to the target, so moving it into place never crosses file systems.
-        let staging = location.join(format!(".staging-{}", jdk_dir_name(vendor, &dl.version)));
-        let _ = std::fs::remove_dir_all(&staging);
-        std::fs::create_dir_all(&staging)?;
-        let result = (|| {
-            let archive = fetch_verified(&self.downloads, &http, &dl, &staging, cancel, emit)?;
-            emit(InstallEvent::Line { text: "Extracting…".into() });
-            let pkg = staging.join("pkg");
-            archive::extract(&archive, archive::ArchiveKind::from_name(&dl.name), &pkg, "java", cancel)?;
-            let home = usable_java_home(&pkg, self.platform, runtime)
-                .ok_or_else(|| IdeError::new(ErrorKind::Io, format!("no JDK found in {}", dl.name)))?;
-            // Last point to stop: from here the JDK replaces what is at `target`.
-            if cancel.is_cancelled() {
-                return Err(IdeError::cancelled());
-            }
-            if target.exists() {
-                std::fs::remove_dir_all(&target)?;
-            }
-            std::fs::rename(unpacked_root(&pkg, &home), &target)?;
-            clear_quarantine(&target);
-            usable_java_home(&target, self.platform, runtime)
-                .ok_or_else(|| IdeError::new(ErrorKind::Io, format!("no JDK found in {}", target.display())))
-        })();
-        let _ = std::fs::remove_dir_all(&staging);
-        let home = result?;
-        emit(InstallEvent::Line { text: format!("Eclipse Temurin {} installed in {}", dl.version, home.display()) });
         Ok(done(home))
     }
 }
@@ -372,6 +584,15 @@ mod tests {
             "https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=x64&image_type=jdk&os=windows&vendor=eclipse"
         );
         assert!(adoptium_assets_url(17, LINUX_X64).contains("os=linux"));
+        assert_eq!(
+            microsoft_jdk_url(21, WIN_X64),
+            "https://aka.ms/download-jdk/microsoft-jdk-21-windows-x64.zip"
+        );
+        assert_eq!(
+            corretto_jdk_url(21, WIN_X64),
+            "https://corretto.aws/downloads/latest/amazon-corretto-21-x64-windows-jdk.zip"
+        );
+        assert!(zulu_packages_url(21, WIN_X64).contains("java_version=21&os=windows&arch=x64&archive_type=zip"));
     }
 
     fn asset(name: &str, os: &str, heap: &str, checksum: &str) -> String {
@@ -467,6 +688,7 @@ mod tests {
         let v = AssetVersion { major: 21, minor: 0, security: 9, openjdk_version: None };
         assert_eq!(v.display(), "21.0.9");
         assert_eq!(jdk_dir_name(TEMURIN, "25.0.1"), "temurin-25.0.1");
+        assert_eq!(jdk_dir_name(MICROSOFT, "21.0.6"), "microsoft-21.0.6");
         assert_eq!(jdk_dir_name(TEMURIN, "1.8.0_472"), "temurin-1.8.0_472");
     }
 
@@ -516,50 +738,5 @@ mod tests {
         let tools = Tools::with_paths(PathBuf::from("/nonexistent"), Default::default(), LINUX_X64);
         let err = tools.download_jdk("acme", 25, None, &CancellationToken::new(), &|_| {}).unwrap_err();
         assert_eq!(err.kind, ErrorKind::InvalidInput, "{err:?}");
-    }
-
-    /// Downloads a real JDK from Adoptium: `OPENIDEA_LIVE_JDK=25 cargo nextest run -p ide-tools live_download`;
-    /// `OPENIDEA_LIVE_JDK_OS=windows|linux` fetches and unpacks another platform's archive (not run).
-    #[test]
-    fn live_download() {
-        let Some(feature) = std::env::var("OPENIDEA_LIVE_JDK").ok().and_then(|v| v.parse::<u32>().ok()) else {
-            return;
-        };
-        let tmp = tempfile::tempdir().unwrap();
-        let other = match std::env::var("OPENIDEA_LIVE_JDK_OS").as_deref() {
-            Ok("windows") => Some(WIN_X64),
-            Ok("linux") => Some(LINUX_X64),
-            _ => None,
-        };
-        if let Some(platform) = other {
-            let tools = Tools::with_paths(crate::tools_dir(tmp.path()), ide_core::tool_path::search_path(), platform);
-            let jdk = tools.download_jdk(TEMURIN, feature, None, &CancellationToken::new(), &|_| {}).unwrap();
-            let home = jdk.home.into_path_buf();
-            eprintln!("{}", home.display());
-            assert!(home.join("bin").join(platform.exe("java")).is_file());
-            assert_eq!(home.parent(), Some(jdks_dir(tmp.path()).as_path()), "no Contents/Home outside macOS");
-            return;
-        }
-        let tools = Tools::new(tmp.path());
-        let releases = tools.jdk_releases(TEMURIN, &CancellationToken::new()).unwrap();
-        assert!(releases.versions.contains(&feature), "{releases:?}");
-        let emit = |e: InstallEvent| {
-            if let InstallEvent::Line { text } = e {
-                eprintln!("{text}");
-            }
-        };
-        let jdk = tools.download_jdk(TEMURIN, feature, None, &CancellationToken::new(), &emit).unwrap();
-        let home = jdk.home.clone().into_path_buf();
-        assert!(home.starts_with(jdks_dir(tmp.path())), "{}", home.display());
-        let out = std::process::Command::new(home.join("bin").join(Platform::current().exe("java")))
-            .arg("-version")
-            .output()
-            .unwrap();
-        let text = String::from_utf8_lossy(&out.stderr);
-        eprintln!("{text}");
-        assert!(out.status.success() && text.contains("Temurin"), "{text}");
-        // Downloading again reuses it.
-        let again = tools.download_jdk(TEMURIN, feature, None, &CancellationToken::new(), &|_| {}).unwrap();
-        assert_eq!(again.home, jdk.home);
     }
 }

@@ -4398,7 +4398,7 @@
   "{count} modified action": "{count} action modifiée",
   "{count} modified actions": "{count} actions modifiées",
   "Runs “<base> -m venv <location>”; the new interpreter becomes the project interpreter.": "Exécute « <base> -m venv <location> » ; le nouvel interpréteur devient l'interpréteur du projet.",
-  "{vendor} {version} is unpacked into a folder of its own in {location}, where JDK detection finds it.": "{vendor} {version} est décompressé dans un dossier dédié de {location}, où la détection de JDK le trouve.",
+  "{vendor} {version} is unpacked into a folder of its own in {location}, added to JAVA_HOME and PATH, and detected automatically.": "{vendor} {version} est décompressé dans un dossier dédié de {location}, ajouté à JAVA_HOME et PATH, et détecté automatiquement.",
   "detected from {source}": "détecté depuis {source}",
   "modified": "modifié",
   "seconds": "secondes",

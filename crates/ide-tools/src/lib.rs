@@ -29,6 +29,7 @@ mod process;
 pub mod registry;
 pub mod server;
 pub mod sources;
+pub mod toolchain;
 
 use ide_core::error::ErrorKind;
 use ide_core::settings::ToolDownloadSettings;
@@ -165,6 +166,11 @@ fn bin_dirs_in(root: &Path, platform: Platform) -> Vec<PathBuf> {
         if let Some(d) = managed_bin_dir(root, spec, platform)
             && !dirs.contains(&d)
         {
+            dirs.push(d);
+        }
+    }
+    for d in toolchain::installed_sdk_bin_dirs(root) {
+        if !dirs.contains(&d) {
             dirs.push(d);
         }
     }
@@ -1026,6 +1032,12 @@ impl Tools {
                     ErrorKind::Io,
                     format!("installer finished but `{}` was not found afterwards", spec.commands[0]),
                 ));
+            }
+            if spec.kind == ToolKind::Cli
+                && let Some(bin) = managed_bin_dir(&self.root, spec, self.platform)
+                && bin.is_dir()
+            {
+                let _ = ide_core::process::register_user_env(&[bin], &[]);
             }
             emit(InstallEvent::Line {
                 text: format!("{} {} installed", spec.display, info.version.as_deref().unwrap_or(""))

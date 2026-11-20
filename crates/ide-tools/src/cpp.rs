@@ -184,8 +184,22 @@ pub struct WinSysrootLayout {
     pub arch: String,
     /// True when library directories use Microsoft arch names (`x64`/`arm64`) required by `clang-cl /winsysroot`.
     pub uses_ms_arch: bool,
+    /// True when debug CRT libraries (`msvcrtd.lib` and `ucrtd.lib`) are present in the sysroot.
+    pub has_debug_libs: bool,
     pub include_dirs: Vec<PathBuf>,
     pub lib_dirs: Vec<PathBuf>,
+}
+
+fn has_file_ci(dir: &Path, expected_lower: &str) -> bool {
+    if dir.join(expected_lower).is_file() {
+        return true;
+    }
+    std::fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(expected_lower))
 }
 
 fn arch_dir_candidates(arch: &str) -> [&'static str; 2] {
@@ -264,11 +278,15 @@ pub fn inspect_winsysroot(winsysroot: &Path, arch: &str) -> Option<WinSysrootLay
         return None;
     }
 
+    let has_debug_libs =
+        lib_dirs.iter().any(|d| has_file_ci(d, "msvcrtd.lib")) && lib_dirs.iter().any(|d| has_file_ci(d, "ucrtd.lib"));
+
     Some(WinSysrootLayout {
         msvc_version,
         sdk_version,
         arch: arch.to_owned(),
         uses_ms_arch,
+        has_debug_libs,
         include_dirs,
         lib_dirs,
     })
@@ -299,7 +317,7 @@ pub fn write_llvm_winsdk_configs(
     let rel_sysroot = format!("{prefix}/winsysroot");
 
     let clang_cl_cfg = if layout.uses_ms_arch {
-        format!("-fuse-ld=lld\n/winsysroot\n{rel_sysroot}\n")
+        format!("-fuse-ld=lld\n/winsysroot\n\"{rel_sysroot}\"\n")
     } else {
         let mut cfg = String::from("-fuse-ld=lld\n");
         for inc in &layout.include_dirs {
@@ -513,7 +531,52 @@ impl Tools {
             self.ensure_cpp_build_tools(downloaded.bin_dir.as_ref(), cancel, emit)?;
         }
 
+        self.register_cpp_user_env(&downloaded, emit);
+
         Ok(downloaded)
+    }
+
+    fn register_cpp_user_env(&self, downloaded: &DownloadedCppToolchain, emit: Emit) {
+        let mut path_dirs = vec![downloaded.bin_dir.clone().into_path_buf()];
+        for tool in ["cmake", "ninja"] {
+            let managed = self.root.join(tool).join("bin");
+            if managed.is_dir() {
+                path_dirs.push(managed);
+            }
+        }
+        let mut env_owned: Vec<(String, String)> = Vec::new();
+        if let Some(sysroot) = &downloaded.winsysroot {
+            let arch = winsysroot_arch(self.platform.arch);
+            if let Some(layout) = inspect_winsysroot(sysroot.as_ref(), arch) {
+                let sep = if cfg!(windows) { ";" } else { ":" };
+                let join = |dirs: &[PathBuf]| {
+                    dirs.iter().map(|d| d.to_string_lossy().into_owned()).collect::<Vec<_>>().join(sep)
+                };
+                if !layout.include_dirs.is_empty() {
+                    env_owned.push(("INCLUDE".into(), join(&layout.include_dirs)));
+                }
+                if !layout.lib_dirs.is_empty() {
+                    env_owned.push(("LIB".into(), join(&layout.lib_dirs)));
+                }
+            }
+        }
+        let vars: Vec<(&str, &str)> = env_owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        match ide_core::process::register_user_env(&path_dirs, &vars) {
+            Ok(()) => {
+                let mut names = vec!["PATH"];
+                for (k, _) in &vars {
+                    names.push(k);
+                }
+                emit(InstallEvent::Line {
+                    text: format!("Added C/C++ toolchain to environment variables ({}).", names.join(", ")),
+                });
+            }
+            Err(err) => {
+                emit(InstallEvent::Line {
+                    text: format!("Warning: could not update user environment variables: {err}"),
+                });
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -576,12 +639,22 @@ impl Tools {
         if with_winsdk && self.platform.os == Os::Windows {
             let sysroot = target.join("winsysroot");
             let arch = winsysroot_arch(self.platform.arch);
-            if inspect_winsysroot(&sysroot, arch).is_none() {
-                self.download_windows_sdk_with_xwin(&http, location, &sysroot, cancel, emit)?;
-            } else {
-                emit(InstallEvent::Line {
-                    text: format!("Standalone Windows SDK is already present in {}", sysroot.display()),
-                });
+            match inspect_winsysroot(&sysroot, arch) {
+                Some(layout) if layout.has_debug_libs => {
+                    emit(InstallEvent::Line {
+                        text: format!("Standalone Windows SDK is already present in {}", sysroot.display()),
+                    });
+                }
+                Some(_) => {
+                    emit(InstallEvent::Line {
+                        text: "Standalone Windows SDK is missing debug CRT libraries (msvcrtd.lib); updating via xwin…"
+                            .into(),
+                    });
+                    self.download_windows_sdk_with_xwin(&http, location, &sysroot, cancel, emit)?;
+                }
+                None => {
+                    self.download_windows_sdk_with_xwin(&http, location, &sysroot, cancel, emit)?;
+                }
             }
             emit(InstallEvent::Line {
                 text: "Configuring Clang (.cfg and toolchain.cmake) to use the standalone Windows SDK…".into(),
@@ -647,6 +720,7 @@ impl Tools {
             "--use-winsysroot-style",
             "--preserve-ms-arch-notation",
             "--disable-symlinks",
+            "--include-debug-libs",
             "--output",
         ])
         .arg(winsysroot);

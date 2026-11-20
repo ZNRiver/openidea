@@ -159,6 +159,23 @@ pub(crate) fn cpp_toolchain(root: &Path, s: &Settings) -> Option<crate::cpp::Cpp
     None
 }
 
+/// Whether Windows has Visual Studio's debug UCRT runtime DLL (`ucrtbased.dll`) installed.
+/// Standalone `xwin` SDKs without Visual Studio lack this DLL at runtime, so Debug builds
+/// should link statically (`/MTd`) when static debug libs are available.
+fn windows_has_debug_crt_dlls() -> bool {
+    #[cfg(windows)]
+    {
+        let root = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+        root.join("System32").join("ucrtbased.dll").is_file()
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
 /// Runtime choices for package-manager based IDE tool installs.
 #[derive(Default)]
 pub struct ToolInstallEnvironment {
@@ -2040,6 +2057,27 @@ pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback:
                         let has_ninja = which("ninja").is_some() || cpp.bin_dir.join(exe("ninja")).is_file();
                         if !cpp.is_msvc && has_ninja && !c.args.iter().any(|a| a == "-G") {
                             c.env.entry("CMAKE_GENERATOR".into()).or_insert_with(|| "Ninja".into());
+                        }
+                        // Standalone LLVM + Windows SDK: ensure Debug builds link cleanly even
+                        // on older sysroots downloaded without `msvcrtd.lib` or on Windows machines
+                        // without Visual Studio's debug CRT DLLs (`ucrtbased.dll`) in System32.
+                        if cpp.winsysroot.is_some()
+                            && c.args.first().is_some_and(|a| a == "-S")
+                            && !c.args.iter().any(|a| a.contains("CMAKE_MSVC_RUNTIME_LIBRARY"))
+                        {
+                            let runtime = if !cpp.has_debug_libs {
+                                Some("MultiThreadedDLL")
+                            } else if cfg!(windows)
+                                && cpp.has_static_debug_libs
+                                && !windows_has_debug_crt_dlls()
+                            {
+                                Some("MultiThreaded$<$<CONFIG:Debug>:Debug>")
+                            } else {
+                                None
+                            };
+                            if let Some(runtime) = runtime {
+                                c.args.push(format!("-DCMAKE_MSVC_RUNTIME_LIBRARY={runtime}"));
+                            }
                         }
                     }
                 }

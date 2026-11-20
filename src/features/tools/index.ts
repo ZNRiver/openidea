@@ -10,6 +10,7 @@ import { registerOverlay } from "@/workbench/contributions";
 import { DownloadCppOverlay, installCppPrompts, registerCppActions } from "./cpp";
 import { installExpiredServerPrompts } from "./expired";
 import { installJdkPrompts, registerJdkActions } from "./jdk";
+import { DownloadToolchainOverlay, registerToolchainActions } from "./toolchain";
 import {
   installMissingServerPrompts,
   installServerReadyExpiry,
@@ -79,6 +80,8 @@ export function activate(): () => void {
     registerOverlay({ id: "tools.downloadCpp", component: DownloadCppOverlay }),
     registerCppActions(),
     installCppPrompts(),
+    registerOverlay({ id: "tools.downloadToolchain", component: DownloadToolchainOverlay }),
+    registerToolchainActions(),
   ];
   return () => disposers.reverse().forEach((d) => d());
 }

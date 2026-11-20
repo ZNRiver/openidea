@@ -41,7 +41,9 @@ import { showAssignShortcut, useAssignShortcut } from "./keymap/assignShortcutSt
 import { settingsSearchEntries } from "./searchIndex";
 import { activatePythonStatus } from "./languages/PythonStatus";
 import { activatePhpStatus } from "./languages/PhpStatus";
+import { DownloadJdkOverlay, showDownloadJdkOverlay } from "./languages/DownloadJdkDialog";
 import { trackIconThemePages } from "./iconThemePages";
+import { OPEN_DOWNLOAD_JDK_DIALOG_ACTION, type OpenDownloadJdkDialogArgs } from "@/platform/jdk";
 
 export { activateSettingsWindow };
 
@@ -76,6 +78,7 @@ export function activate(): () => void {
     registerOverlay({ id: "settings.dialog", component: LazySettingsDialog }),
     registerOverlay({ id: "settings.projectStructure", component: LazyProjectStructureDialog }),
     registerOverlay({ id: "settings.presentationAssistant", component: PresentationAssistant }),
+    registerOverlay({ id: "settings.downloadJdk", component: DownloadJdkOverlay }),
     activateFileTypes(),
     registerOverlay({
       id: "settings.assignShortcut",
@@ -89,6 +92,20 @@ export function activate(): () => void {
       presentationAssistantAction(),
       ...navigationBarActions(),
       ...settingsActions((page, newProjects) => showSettings(page, newProjects)),
+      {
+        id: OPEN_DOWNLOAD_JDK_DIALOG_ACTION,
+        title: "Download JDK…",
+        category: "Java",
+        icon: "package",
+        keywords: ["jdk", "java", "temurin", "microsoft", "corretto", "zulu", "download"],
+        run: ({ arg }) => {
+          const parsed =
+            arg && typeof arg === "object" && ("initialVersion" in arg || "onComplete" in arg)
+              ? (arg as OpenDownloadJdkDialogArgs)
+              : undefined;
+          showDownloadJdkOverlay(parsed);
+        },
+      },
       {
         id: "file.projectStructure",
         title: "Project Structure…",

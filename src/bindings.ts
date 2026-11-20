@@ -1749,6 +1749,17 @@ export const commands = {
 	termStoreImage: (id: TerminalId, data: number[], mime: string) => typedError<string, IdeError>(__TAURI_INVOKE("term_store_image", { id, data, mime })),
 	termWrite: (id: TerminalId, data: string) => typedError<null, IdeError>(__TAURI_INVOKE("term_write", { id, data })),
 	/**
+	 *  Downloads a language SDK / runtime (`uv`, `node-lts`, `rustup-stable`, `go`, `zig`,
+	 *  `dotnet-lts`, `php`, `dart`, `flutter`, `maven`, `gradle`, …) into `location`
+	 *  (default: [`toolchain_download_location`]) and registers it in user environment variables.
+	 *  Streams progress through `on_event`; cancellable with `cancel_request(request)`.
+	 */
+	toolchainDownload: (provider: string, location: string | null, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<DownloadedToolchain, IdeError>(__TAURI_INVOKE("toolchain_download", { provider, location, request, onEvent })),
+	/**  Where Download SDK / Toolchain puts downloaded runtimes unless told otherwise. */
+	toolchainDownloadLocation: () => typedError<IpcPath, IdeError>(__TAURI_INVOKE("toolchain_download_location")),
+	/**  Language SDK / runtime distributions available for download on this platform. */
+	toolchainDownloadProviders: (runtime: string | null) => __TAURI_INVOKE<ToolchainProvider[]>("toolchain_download_providers", { runtime }),
+	/**
 	 *  Installs (or reinstalls) a tool into `<app-data>/tools`, streaming output through
 	 *  `on_event`. Cancel with `cancel_request(request)`.
 	 */
@@ -5553,6 +5564,17 @@ export type DownloadProgress = {
 	path: string,
 	done: number,
 	total: number,
+};
+
+/**  Result of downloading and registering a language toolchain. */
+export type DownloadedToolchain = {
+	id: string,
+	runtime: string,
+	name: string,
+	version: string,
+	home: IpcPath,
+	binDir: IpcPath,
+	envVars: ([string, string])[],
 };
 
 export type DuplicateGroup = {
@@ -12274,6 +12296,19 @@ export type ToolUpdate = {
 	current: string,
 	/**  The version installing the tool again would get. */
 	latest: string,
+};
+
+/**  A downloadable runtime, SDK, or toolchain distribution. */
+export type ToolchainProvider = {
+	id: string,
+	/**  Logical language/ecosystem key (`python`, `node`, `rust`, `go`, `zig`, `dotnet`, `php`, `dart`, `flutter`, `java-build`, `ruby`, `haskell`). */
+	runtime: string,
+	name: string,
+	description: string,
+	/**  Primary executables provided by this distribution (e.g. `["uv", "python"]`, `["node", "npm"]`). */
+	programs: string[],
+	recommended: boolean,
+	requiresAdmin: boolean,
 };
 
 /**  Something the user must know to read the trace correctly. */

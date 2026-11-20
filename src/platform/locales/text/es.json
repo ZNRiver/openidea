@@ -4542,7 +4542,7 @@
   "{count} modified action": "{count} acción modificada",
   "{count} modified actions": "{count} acciones modificadas",
   "Runs “<base> -m venv <location>”; the new interpreter becomes the project interpreter.": "Ejecuta “<base> -m venv <location>”; el nuevo intérprete se convierte en el intérprete del proyecto.",
-  "{vendor} {version} is unpacked into a folder of its own in {location}, where JDK detection finds it.": "{vendor} {version} se descomprime en su propia carpeta en {location}, donde la detección de JDK lo encuentra.",
+  "{vendor} {version} is unpacked into a folder of its own in {location}, added to JAVA_HOME and PATH, and detected automatically.": "{vendor} {version} se descomprime en su propia carpeta en {location}, se agrega a JAVA_HOME y PATH, y se detecta automáticamente.",
   "detected from {source}": "detectado desde {source}",
   "modified": "modificado",
   "seconds": "segundos",

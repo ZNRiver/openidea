@@ -6,6 +6,18 @@ on:
       - main
       - master
   workflow_dispatch:
+    inputs:
+      target:
+        description: "Platform(s) to build"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - windows-x64
+          - windows
+          - linux
+          - macos
 
 concurrency:
   group: release-build
@@ -17,6 +29,11 @@ permissions:
 jobs:
   build:
     name: Build (${{ matrix.name }})
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      inputs.target == 'all' ||
+      inputs.target == matrix.name ||
+      inputs.target == matrix.platform
     runs-on: ${{ matrix.os }}
     env:
       CACHE_ON_FAILURE: "true"
@@ -28,20 +45,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: linux-x64
-            os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            platform: linux
-            arch: x64
-            server_os: linux
-            server_arch: x86_64
-          - name: linux-arm64
-            os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            platform: linux
-            arch: arm64
-            server_os: linux
-            server_arch: aarch64
           - name: windows-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -56,6 +59,20 @@ jobs:
             arch: arm64
             server_os: ""
             server_arch: ""
+          - name: linux-x64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            platform: linux
+            arch: x64
+            server_os: linux
+            server_arch: x86_64
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            platform: linux
+            arch: arm64
+            server_os: linux
+            server_arch: aarch64
           - name: macos-arm64
             os: macos-latest
             target: aarch64-apple-darwin
@@ -158,11 +175,11 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --release --target ${{ matrix.target }} -p ide-host --bin openidea-server
-          mkdir -p release-assets
+          mkdir -p release-split/server
           asset="openidea-server-${{ matrix.server_os }}-${{ matrix.server_arch }}.gz"
-          gzip -9 -c "target/${{ matrix.target }}/release/openidea-server" > "release-assets/${asset}"
+          gzip -9 -c "target/${{ matrix.target }}/release/openidea-server" > "release-split/server/${asset}"
           (
-            cd release-assets
+            cd release-split/server
             if command -v sha256sum >/dev/null 2>&1; then
               sha256sum "${asset}" > "${asset}.sha256"
             else
@@ -170,93 +187,200 @@ jobs:
             fi
           )
 
-      - name: Collect Windows artifacts
+      - name: Collect Windows artifacts (Setup, Portable .exe, Portable .zip, MSI)
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
           $releaseDir = "target/${{ matrix.target }}/release"
           $bundleDir = "$releaseDir/bundle"
 
+          New-Item -ItemType Directory -Force -Path `
+            release-split/portable-exe, `
+            release-split/portable-zip, `
+            release-split/setup, `
+            release-split/msi | Out-Null
+
+          # 1. Direct standalone portable .exe (ready to run immediately)
+          Copy-Item "$releaseDir/openidea.exe" "release-split/portable-exe/OpenIDEA-windows-${{ matrix.arch }}-portable.exe"
+
+          # 2. Portable .zip bundle (includes WebView2Loader.dll if present)
           $portableStage = "portable-stage"
           New-Item -ItemType Directory -Force -Path $portableStage | Out-Null
-          Copy-Item "$releaseDir/openidea.exe" "$portableStage/openidea.exe"
+          Copy-Item "$releaseDir/openidea.exe" "$portableStage/OpenIDEA.exe"
           if (Test-Path "$releaseDir/WebView2Loader.dll") {
             Copy-Item "$releaseDir/WebView2Loader.dll" "$portableStage/WebView2Loader.dll"
           }
-          Compress-Archive -Path "$portableStage/*" -DestinationPath "release-assets/OpenIDEA-windows-${{ matrix.arch }}-portable.zip" -Force
+          Compress-Archive -Path "$portableStage/*" -DestinationPath "release-split/portable-zip/OpenIDEA-windows-${{ matrix.arch }}-portable.zip" -Force
 
+          # 3. NSIS Setup installer (.exe)
           $nsis = Get-ChildItem "$bundleDir/nsis/*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($nsis) {
-            Copy-Item $nsis.FullName "release-assets/OpenIDEA-windows-${{ matrix.arch }}-setup.exe"
+            Copy-Item $nsis.FullName "release-split/setup/OpenIDEA-windows-${{ matrix.arch }}-setup.exe"
           }
 
+          # 4. MSI installer (.msi)
           $msi = Get-ChildItem "$bundleDir/msi/*.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($msi) {
-            Copy-Item $msi.FullName "release-assets/OpenIDEA-windows-${{ matrix.arch }}.msi"
+            Copy-Item $msi.FullName "release-split/msi/OpenIDEA-windows-${{ matrix.arch }}.msi"
           }
 
-          Get-ChildItem release-assets
+          Get-ChildItem -Recurse -File release-split
 
-      - name: Collect Linux artifacts
+      - name: Collect Linux artifacts (AppImage, DEB, RPM, Portable)
         if: matrix.platform == 'linux'
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p release-assets
+          mkdir -p release-split/portable release-split/appimage release-split/deb release-split/rpm
           release_dir="target/${{ matrix.target }}/release"
           bundle_dir="${release_dir}/bundle"
 
-          tar -C "${release_dir}" -czf "release-assets/OpenIDEA-linux-${{ matrix.arch }}-portable.tar.gz" openidea
+          tar -C "${release_dir}" -czf "release-split/portable/OpenIDEA-linux-${{ matrix.arch }}-portable.tar.gz" openidea
 
           appimage=$(find "${bundle_dir}/appimage" -maxdepth 1 -name '*.AppImage' 2>/dev/null | head -n 1 || true)
           if [ -n "${appimage}" ]; then
-            cp "${appimage}" "release-assets/OpenIDEA-linux-${{ matrix.arch }}.AppImage"
+            cp "${appimage}" "release-split/appimage/OpenIDEA-linux-${{ matrix.arch }}.AppImage"
           fi
 
           deb=$(find "${bundle_dir}/deb" -maxdepth 1 -name '*.deb' 2>/dev/null | head -n 1 || true)
           if [ -n "${deb}" ]; then
-            cp "${deb}" "release-assets/OpenIDEA-linux-${{ matrix.arch }}.deb"
+            cp "${deb}" "release-split/deb/OpenIDEA-linux-${{ matrix.arch }}.deb"
           fi
 
           rpm=$(find "${bundle_dir}/rpm" -maxdepth 1 -name '*.rpm' 2>/dev/null | head -n 1 || true)
           if [ -n "${rpm}" ]; then
-            cp "${rpm}" "release-assets/OpenIDEA-linux-${{ matrix.arch }}.rpm"
+            cp "${rpm}" "release-split/rpm/OpenIDEA-linux-${{ matrix.arch }}.rpm"
           fi
 
-          ls -la release-assets
+          find release-split -type f -ls
 
-      - name: Collect macOS artifacts
+      - name: Collect macOS artifacts (DMG, App)
         if: matrix.platform == 'macos'
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p release-assets
+          mkdir -p release-split/dmg release-split/app
           bundle_dir="target/${{ matrix.target }}/release/bundle"
 
           if [ -d "${bundle_dir}/macos/OpenIDEA.app" ]; then
-            tar -C "${bundle_dir}/macos" -czf "release-assets/OpenIDEA-macos-${{ matrix.arch }}.app.tar.gz" OpenIDEA.app
+            tar -C "${bundle_dir}/macos" -czf "release-split/app/OpenIDEA-macos-${{ matrix.arch }}.app.tar.gz" OpenIDEA.app
           fi
 
           dmg=$(find "${bundle_dir}/dmg" -maxdepth 1 -name '*.dmg' 2>/dev/null | head -n 1 || true)
           if [ -n "${dmg}" ]; then
-            cp "${dmg}" "release-assets/OpenIDEA-macos-${{ matrix.arch }}.dmg"
+            cp "${dmg}" "release-split/dmg/OpenIDEA-macos-${{ matrix.arch }}.dmg"
           fi
 
-          ls -la release-assets
+          find release-split -type f -ls
 
-      - name: Upload build artifacts
+      # ---- Separated Windows artifacts ----
+      - name: Upload Windows Portable (.exe)
+        if: matrix.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.name }}
-          path: release-assets/*
+          name: OpenIDEA-windows-${{ matrix.arch }}-portable-exe
+          path: release-split/portable-exe/*
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
+
+      - name: Upload Windows Setup (.exe)
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenIDEA-windows-${{ matrix.arch }}-setup
+          path: release-split/setup/*
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Windows Portable (.zip)
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenIDEA-windows-${{ matrix.arch }}-portable-zip
+          path: release-split/portable-zip/*
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Windows MSI (.msi)
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenIDEA-windows-${{ matrix.arch }}-msi
+          path: release-split/msi/*
+          if-no-files-found: warn
+          retention-days: 7
+
+      # ---- Separated Linux artifacts ----
+      - name: Upload Linux Portable (.tar.gz)
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenIDEA-linux-${{ matrix.arch }}-portable
+          path: release-split/portable/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Linux AppImage
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenIDEA-linux-${{ matrix.arch }}-appimage
+          path: release-split/appimage/*
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Linux DEB
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenIDEA-linux-${{ matrix.arch }}-deb
+          path: release-split/deb/*
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Linux RPM
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenIDEA-linux-${{ matrix.arch }}-rpm
+          path: release-split/rpm/*
+          if-no-files-found: warn
+          retention-days: 7
+
+      # ---- Separated macOS artifacts ----
+      - name: Upload macOS DMG
+        if: matrix.platform == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenIDEA-macos-${{ matrix.arch }}-dmg
+          path: release-split/dmg/*
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload macOS App (.app.tar.gz)
+        if: matrix.platform == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenIDEA-macos-${{ matrix.arch }}-app
+          path: release-split/app/*
+          if-no-files-found: warn
+          retention-days: 7
+
+      # ---- Remote server binary ----
+      - name: Upload openidea-server
+        if: matrix.server_os != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenIDEA-server-${{ matrix.name }}
+          path: release-split/server/*
+          if-no-files-found: warn
+          retention-days: 7
 
   publish:
     name: Publish rolling release
     needs: build
+    if: always() && (needs.build.result == 'success' || needs.build.result == 'failure')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -267,9 +391,17 @@ jobs:
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: release-*
+          pattern: OpenIDEA-*
           path: dist-release
           merge-multiple: true
+
+      - name: Verify artifacts were produced
+        run: |
+          if [ ! -d dist-release ] || [ -z "$(ls -A dist-release 2>/dev/null)" ]; then
+            echo "No build artifacts produced; skipping release publish."
+            exit 1
+          fi
+          ls -lh dist-release
 
       - name: Generate SHA256SUMS.txt
         working-directory: dist-release
@@ -303,6 +435,12 @@ jobs:
           - **Branch:** \`${GITHUB_REF_NAME}\`
           - **Built at:** ${BUILD_DATE}
           - **Defaults:** VS Code keymap preset & portable storage next to the executable (\`./config\`, \`./data\`, \`./logs\`)
+
+          ### Windows downloads
+          - **Portable (.exe):** \`OpenIDEA-windows-x64-portable.exe\` (standalone executable — run directly)
+          - **Setup (.exe):** \`OpenIDEA-windows-x64-setup.exe\` (NSIS installer)
+          - **Portable (.zip):** \`OpenIDEA-windows-x64-portable.zip\`
+          - **MSI (.msi):** \`OpenIDEA-windows-x64.msi\`
           EOF
 
           gh release create "${TAG}" dist-release/* \

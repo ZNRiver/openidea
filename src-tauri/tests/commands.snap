@@ -630,6 +630,9 @@ term_resize                                  always             project_host bin
 term_spawn                                   always             project_host bindings async
 term_store_image                             always             project_host bindings async
 term_write                                   always             project_host bindings sync
+toolchain_download                           always             project_host bindings async
+toolchain_download_location                  always             project_host bindings sync
+toolchain_download_providers                 always             project_host bindings sync
 tools_install                                outside_restricted project_host bindings async
 tools_list                                   outside_restricted project_host bindings async
 tools_uninstall                              outside_restricted project_host bindings async

@@ -182,7 +182,7 @@ export function DownloadCppDialog({
               administrator approval.
             </T>
           ) : (
-            tx`The toolchain is unpacked into ${dir}, where CMake and clangd detect it automatically.`
+            tx`The toolchain is unpacked into ${dir}, added to your environment variables (PATH, INCLUDE, LIB), and detected by CMake and clangd automatically.`
           )}
         </div>
 

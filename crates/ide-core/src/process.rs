@@ -612,10 +612,24 @@ pub fn host_var_os_in(dir: &Path, key: impl AsRef<OsStr>) -> Option<OsString> {
     host_var_os_for(Some(dir), key.as_ref())
 }
 
+fn eq_env_key(a: &OsStr, b: &OsStr) -> bool {
+    #[cfg(windows)]
+    {
+        match (a.to_str(), b.to_str()) {
+            (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+            _ => a == b,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        a == b
+    }
+}
+
 fn host_var_os_for(dir: Option<&Path>, key: &OsStr) -> Option<OsString> {
-    match child_env_changes(dir).into_iter().find(|(k, _)| k == key) {
+    match child_env_changes(dir).into_iter().find(|(k, _)| eq_env_key(k, key)) {
         Some((_, fixed)) => fixed,
-        None => std::env::var_os(key).or_else(|| shell_env_for(dir).find(|(k, _)| k == key).map(|(_, v)| v)),
+        None => std::env::var_os(key).or_else(|| shell_env_for(dir).find(|(k, _)| eq_env_key(k, key)).map(|(_, v)| v)),
     }
 }
 
@@ -625,7 +639,7 @@ fn apply_changes(
     changes: &[(OsString, Option<OsString>)],
 ) -> Vec<(OsString, OsString)> {
     for (key, value) in changes {
-        let at = vars.iter().position(|(k, _)| k == key);
+        let at = vars.iter().position(|(k, _)| eq_env_key(k, key));
         match (at, value) {
             (Some(i), Some(v)) => vars[i].1 = v.clone(),
             (Some(i), None) => {
@@ -643,15 +657,15 @@ fn apply_changes(
 fn child_env_changes(dir: Option<&Path>) -> Vec<(OsString, Option<OsString>)> {
     let mut changes = appimage_fixes();
     let overlay = env_overlay();
-    changes.retain(|(k, _)| !overlay.iter().any(|(o, _)| o == k));
+    changes.retain(|(k, _)| !overlay.iter().any(|(o, _)| eq_env_key(o, k)));
     changes.extend(overlay.iter().cloned());
     // A manual HTTP proxy reaches tools that read `HTTP_PROXY` (language servers, git, curl).
     let proxy = crate::proxy_settings::proxy().child_env();
-    changes.retain(|(k, _)| !proxy.iter().any(|(p, _)| p == k));
+    changes.retain(|(k, _)| !proxy.iter().any(|(p, _)| eq_env_key(p, k)));
     changes.extend(proxy);
     if let Some(dir) = dir {
         let project = crate::project_env::for_dir(dir);
-        changes.retain(|(k, _)| !project.iter().any(|(p, _)| p == k));
+        changes.retain(|(k, _)| !project.iter().any(|(p, _)| eq_env_key(p, k)));
         changes.extend(project.iter().cloned());
     }
     changes
@@ -750,8 +764,8 @@ fn shell_env_for(dir: Option<&Path>) -> impl Iterator<Item = (OsString, OsString
         .iter()
         .filter(|(k, _)| {
             std::env::var_os(k).is_none()
-                && !overlay.iter().any(|(o, _)| o == k)
-                && !project.iter().any(|(p, _)| p == k)
+                && !overlay.iter().any(|(o, _)| eq_env_key(o, k))
+                && !project.iter().any(|(p, _)| eq_env_key(p, k))
         })
         .cloned()
         .collect();
@@ -919,6 +933,288 @@ fn append_path_entries(path: &OsStr, extra: &OsStr) -> OsString {
         }
     }
     std::env::join_paths(dirs).unwrap_or_else(|_| path.to_owned())
+}
+
+fn normalize_path_entry(entry: &str) -> String {
+    let trimmed = entry.trim().trim_matches('"').trim_end_matches(['\\', '/']);
+    if cfg!(windows) { trimmed.to_ascii_lowercase() } else { trimmed.to_owned() }
+}
+
+/// Prepends `new_entries` ahead of `current` (split by `sep`), preserving unrelated entries
+/// and avoiding duplicates (case-insensitive on Windows).
+pub fn merge_env_path_list(current: &str, new_entries: &[String], sep: char) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for entry in new_entries.iter().map(String::as_str).chain(current.split(sep)) {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if seen.insert(normalize_path_entry(trimmed)) {
+            out.push(trimmed.to_owned());
+        }
+    }
+    out.join(&sep.to_string())
+}
+
+fn is_path_list_var(key: &str) -> bool {
+    key.eq_ignore_ascii_case("INCLUDE") || key.eq_ignore_ascii_case("LIB")
+}
+
+/// Registers downloaded SDK/toolchain directories in both the running IDE's child-process
+/// environment overlay (effective immediately without restart) and the user's persistent OS
+/// environment variables (`HKCU\Environment` + `WM_SETTINGCHANGE` on Windows; `~/.openidea-env.sh`
+/// sourced from shell profiles on Unix).
+pub fn register_user_env(prepend_path_dirs: &[std::path::PathBuf], vars: &[(&str, &str)]) -> Result<(), String> {
+    let sep = if cfg!(windows) { ';' } else { ':' };
+    let new_dirs: Vec<String> = prepend_path_dirs
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+
+    // 1. Update in-process overlay immediately so newly spawned processes, language servers,
+    //    terminals, and scaffold checks see the installed tools right away.
+    {
+        let current_path = host_var_os("PATH").unwrap_or_default().to_string_lossy().into_owned();
+        let mut overlay: Vec<(OsString, Option<OsString>)> = env_overlay().iter().cloned().collect();
+        let mut upsert = |key: &str, value: OsString| {
+            let k = OsString::from(key);
+            if let Some(slot) = overlay.iter_mut().find(|(existing, _)| eq_env_key(existing, &k)) {
+                slot.1 = Some(value);
+            } else {
+                overlay.push((k, Some(value)));
+            }
+        };
+        if !new_dirs.is_empty() {
+            let merged = merge_env_path_list(&current_path, &new_dirs, sep);
+            upsert("PATH", OsString::from(merged));
+        }
+        for &(key, value) in vars {
+            if key.trim().is_empty() || value.trim().is_empty() {
+                continue;
+            }
+            let final_val = if is_path_list_var(key) {
+                let existing = host_var_os(key).unwrap_or_default().to_string_lossy().into_owned();
+                let incoming: Vec<String> = value.split(sep).map(str::to_owned).collect();
+                merge_env_path_list(&existing, &incoming, sep)
+            } else {
+                value.to_owned()
+            };
+            upsert(key, OsString::from(final_val));
+        }
+        set_env_overlay(overlay);
+    }
+
+    // 2. Persist to the OS user environment.
+    persist_user_env(&new_dirs, vars)
+}
+
+#[cfg(windows)]
+fn persist_user_env(new_dirs: &[String], vars: &[(&str, &str)]) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
+    use windows_sys::Win32::System::Registry::{
+        HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_EXPAND_SZ, REG_SZ, RRF_NOEXPAND, RRF_RT_REG_EXPAND_SZ,
+        RRF_RT_REG_SZ, RegCloseKey, RegGetValueW, RegOpenKeyExW, RegSetValueExW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        HWND_BROADCAST, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_SETTINGCHANGE,
+    };
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    unsafe fn read_raw(key: HKEY, name: &[u16]) -> Option<(String, u32)> {
+        const FLAGS: u32 = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND;
+        let mut kind = 0u32;
+        let mut len = 0u32;
+        let status = unsafe {
+            RegGetValueW(key, std::ptr::null(), name.as_ptr(), FLAGS, &mut kind, std::ptr::null_mut(), &mut len)
+        };
+        if status != ERROR_SUCCESS || len == 0 {
+            return None;
+        }
+        let buf = loop {
+            let mut buf = vec![0u16; len as usize / 2 + 1];
+            let status = unsafe {
+                RegGetValueW(
+                    key,
+                    std::ptr::null(),
+                    name.as_ptr(),
+                    FLAGS,
+                    &mut kind,
+                    buf.as_mut_ptr() as *mut _,
+                    &mut len,
+                )
+            };
+            if status == ERROR_SUCCESS {
+                break buf;
+            }
+            if status != ERROR_MORE_DATA || len == 0 {
+                return None;
+            }
+        };
+        let text = String::from_utf16_lossy(&buf);
+        let end = text.find('\0').unwrap_or(text.len());
+        Some((text[..end].to_owned(), kind))
+    }
+
+    unsafe fn write_reg(key: HKEY, name: &[u16], value: &str, reg_type: u32) -> Result<(), String> {
+        let data = wide(value);
+        let bytes = (data.len() * std::mem::size_of::<u16>()) as u32;
+        let status = unsafe { RegSetValueExW(key, name.as_ptr(), 0, reg_type, data.as_ptr() as *const u8, bytes) };
+        if status != ERROR_SUCCESS {
+            return Err(format!("RegSetValueExW failed with error {status}"));
+        }
+        Ok(())
+    }
+
+    let mut key: HKEY = std::ptr::null_mut();
+    let env_subkey = wide("Environment");
+    // SAFETY: NUL-terminated UTF-16 subkey name; `key` receives the opened handle on success.
+    let status = unsafe {
+        RegOpenKeyExW(HKEY_CURRENT_USER, env_subkey.as_ptr(), 0, KEY_READ | KEY_WRITE, &mut key)
+    };
+    if status != ERROR_SUCCESS {
+        return Err(format!("cannot open HKCU\\Environment (error {status})"));
+    }
+
+    let mut changed = false;
+    let result = (|| -> Result<(), String> {
+        if !new_dirs.is_empty() {
+            let path_name = wide("Path");
+            // SAFETY: `key` is an open registry key handle and `path_name` is NUL-terminated.
+            let (existing, reg_type) =
+                unsafe { read_raw(key, &path_name) }.unwrap_or_else(|| (String::new(), REG_EXPAND_SZ));
+            let merged = merge_env_path_list(&existing, new_dirs, ';');
+            if merged != existing {
+                let target_type = if reg_type == REG_SZ || reg_type == REG_EXPAND_SZ {
+                    reg_type
+                } else {
+                    REG_EXPAND_SZ
+                };
+                // SAFETY: `key` is open with `KEY_WRITE` and `path_name` is NUL-terminated.
+                unsafe { write_reg(key, &path_name, &merged, target_type)? };
+                changed = true;
+            }
+        }
+        for &(var_name, var_value) in vars {
+            if var_name.trim().is_empty() || var_value.trim().is_empty() {
+                continue;
+            }
+            let wname = wide(var_name);
+            // SAFETY: `key` is an open registry key handle and `wname` is NUL-terminated.
+            let (existing, reg_type) = unsafe { read_raw(key, &wname) }.unwrap_or_else(|| (String::new(), REG_SZ));
+            let final_val = if is_path_list_var(var_name) {
+                let incoming: Vec<String> = var_value.split(';').map(str::to_owned).collect();
+                merge_env_path_list(&existing, &incoming, ';')
+            } else {
+                var_value.to_owned()
+            };
+            if final_val != existing {
+                let target_type = if is_path_list_var(var_name) {
+                    REG_EXPAND_SZ
+                } else if reg_type == REG_EXPAND_SZ {
+                    REG_EXPAND_SZ
+                } else {
+                    REG_SZ
+                };
+                // SAFETY: `key` is open with `KEY_WRITE` and `wname` is NUL-terminated.
+                unsafe { write_reg(key, &wname, &final_val, target_type)? };
+                changed = true;
+            }
+        }
+        Ok(())
+    })();
+
+    // SAFETY: `key` was opened by `RegOpenKeyExW` above and is closed once here.
+    unsafe { RegCloseKey(key) };
+    result?;
+
+    if changed {
+        let env_w = wide("Environment");
+        // SAFETY: `env_w` stays alive for the bounded synchronous broadcast.
+        unsafe {
+            let _ = SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                0,
+                env_w.as_ptr() as isize,
+                SMTO_ABORTIFHUNG,
+                2000,
+                std::ptr::null_mut(),
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn persist_user_env(new_dirs: &[String], vars: &[(&str, &str)]) -> Result<(), String> {
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return Ok(());
+    };
+    let env_file = home.join(".openidea-env.sh");
+    let mut path_entries: Vec<String> = Vec::new();
+    let mut scalar_vars: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    if let Ok(existing) = std::fs::read_to_string(&env_file) {
+        for line in existing.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("export PATH=\"")
+                && let Some(dirs) = rest.strip_suffix(":$PATH\"")
+            {
+                for d in dirs.split(':').filter(|s| !s.is_empty()) {
+                    path_entries.push(d.to_owned());
+                }
+            } else if let Some(rest) = line.strip_prefix("export ")
+                && let Some((k, v)) = rest.split_once('=')
+            {
+                let v = v.trim_matches('"').replace("\\\"", "\"").replace("\\\\", "\\");
+                scalar_vars.insert(k.trim().to_owned(), v);
+            }
+        }
+    }
+    let merged_paths = merge_env_path_list(&path_entries.join(":"), new_dirs, ':');
+    for &(k, v) in vars {
+        if k.trim().is_empty() || v.trim().is_empty() {
+            continue;
+        }
+        if is_path_list_var(k) {
+            let prev = scalar_vars.get(k).map(String::as_str).unwrap_or("");
+            let incoming: Vec<String> = v.split(':').map(str::to_owned).collect();
+            scalar_vars.insert(k.to_owned(), merge_env_path_list(prev, &incoming, ':'));
+        } else {
+            scalar_vars.insert(k.to_owned(), v.to_owned());
+        }
+    }
+    let mut out = String::from("# Managed by OpenIDEA — SDK and toolchain environment variables\n");
+    if !merged_paths.is_empty() {
+        let escaped = merged_paths.replace('\\', "\\\\").replace('"', "\\\"");
+        out.push_str(&format!("export PATH=\"{escaped}:$PATH\"\n"));
+    }
+    for (k, v) in scalar_vars {
+        let escaped = v.replace('\\', "\\\\").replace('"', "\\\"");
+        out.push_str(&format!("export {k}=\"{escaped}\"\n"));
+    }
+    std::fs::write(&env_file, out).map_err(|e| format!("cannot write {}: {e}", env_file.display()))?;
+
+    let hook = "[ -f \"$HOME/.openidea-env.sh\" ] && . \"$HOME/.openidea-env.sh\"";
+    let mut profiles = vec![home.join(".profile")];
+    for rc in [".zshrc", ".bashrc", ".zprofile", ".bash_profile"] {
+        let p = home.join(rc);
+        if p.is_file() {
+            profiles.push(p);
+        }
+    }
+    for profile in profiles {
+        let content = std::fs::read_to_string(&profile).unwrap_or_default();
+        if !content.contains(".openidea-env.sh") {
+            let sep = if content.is_empty() || content.ends_with('\n') { "" } else { "\n" };
+            let _ = std::fs::write(&profile, format!("{content}{sep}{hook}\n"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

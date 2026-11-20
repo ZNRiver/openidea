@@ -4494,7 +4494,7 @@
   "Could not save: {error}": "Nie udało się zapisać: {error}",
   "{count} modified action": "{count} zmodyfikowana akcja",
   "{count} modified actions": "Zmodyfikowane akcje: {count}",
-  "{vendor} {version} is unpacked into a folder of its own in {location}, where JDK detection finds it.": "Wersja {vendor} {version} zostaje rozpakowana do własnego folderu w {location}, gdzie zostanie wykryta przez mechanizm wykrywania JDK.",
+  "{vendor} {version} is unpacked into a folder of its own in {location}, added to JAVA_HOME and PATH, and detected automatically.": "Wersja {vendor} {version} zostaje rozpakowana do własnego folderu w {location}, dodana do JAVA_HOME i PATH oraz automatycznie wykryta.",
   "detected from {source}": "wykryto na podstawie {source}",
   "modified": "zmodyfikowano",
   "seconds": "sekund",

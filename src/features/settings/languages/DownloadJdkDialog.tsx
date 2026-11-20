@@ -3,8 +3,9 @@
  * latest build (SHA-256 verified) with progress and Cancel, then selects it.
  */
 import { useEffect, useId, useMemo, useState } from "react";
+import { create } from "zustand";
 import { call, commands, isCancelled, isTauri, nextRequestId, type JdkReleases, type Sdk } from "@/platform/ipc";
-import { downloadJdk, TEMURIN, type JdkDownload } from "@/platform/jdk";
+import { downloadJdk, TEMURIN, type JdkDownload, type OpenDownloadJdkDialogArgs } from "@/platform/jdk";
 import { Dialog, IconButton, Input, ProgressBar, Select, type SelectOption, T } from "@/ui";
 import { rememberSdk } from "./api";
 import { choosePath } from "@/platform/choosePath";
@@ -12,6 +13,46 @@ import styles from "./Sdk.module.css";
 import { tx } from "@/platform/i18n";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+interface DownloadJdkOverlayState {
+  open: boolean;
+  initialVersion?: number;
+  onComplete: ((sdk: Sdk | null) => void) | null;
+}
+
+const useDownloadJdkOverlay = create<DownloadJdkOverlayState>(() => ({ open: false, onComplete: null }));
+
+export function showDownloadJdkOverlay(args?: OpenDownloadJdkDialogArgs) {
+  const prev = useDownloadJdkOverlay.getState();
+  if (prev.open) {
+    args?.onComplete?.(null);
+    return;
+  }
+  useDownloadJdkOverlay.setState({
+    open: true,
+    initialVersion: args?.initialVersion,
+    onComplete: args?.onComplete ?? null,
+  });
+}
+
+function closeDownloadJdkOverlay(sdk: Sdk | null) {
+  const cb = useDownloadJdkOverlay.getState().onComplete;
+  useDownloadJdkOverlay.setState({ open: false, initialVersion: undefined, onComplete: null });
+  cb?.(sdk);
+}
+
+export function DownloadJdkOverlay() {
+  const open = useDownloadJdkOverlay((s) => s.open);
+  const initialVersion = useDownloadJdkOverlay((s) => s.initialVersion);
+  if (!open) return null;
+  return (
+    <DownloadJdkDialog
+      initialVersion={initialVersion}
+      onClose={() => closeDownloadJdkOverlay(null)}
+      onDownloaded={(sdk) => closeDownloadJdkOverlay(sdk)}
+    />
+  );
+}
 
 export function DownloadJdkDialog({
   initialVersion,
@@ -150,7 +191,7 @@ export function DownloadJdkDialog({
           </div>
         </div>
         <div className={styles.note}>
-          {tx`${vendorName} ${version ?? ""} is unpacked into a folder of its own in ${location || "…"}, where JDK detection finds it.`}
+          {tx`${vendorName} ${version ?? ""} is unpacked into a folder of its own in ${location || "…"}, added to JAVA_HOME and PATH, and detected automatically.`}
         </div>
         {progress && (
           <div className={styles.downloadProgress}>

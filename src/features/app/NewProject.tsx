@@ -21,6 +21,8 @@ import {
   type SdkKind,
 } from "@/platform/ipc";
 import { openDownloadCppDialog } from "@/platform/cpp";
+import { openDownloadJdkDialog } from "@/platform/jdk";
+import { openDownloadToolchainDialog, runtimeForProgram } from "@/platform/toolchain";
 import { useProject } from "@/platform/project";
 import { useTx, useTxTemplate } from "@/platform/i18n";
 import {
@@ -130,6 +132,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
   const [dynamic, setDynamic] = useState<{ id: string; key: string; fields: Field[] } | null>(null);
   const [dynamicError, setDynamicError] = useState<string | null>(null);
   const [requirements, setRequirements] = useState<Requirement[]>([]);
+  const [reqVersion, setReqVersion] = useState(0);
   const [sdksByKind, setSdksByKind] = useState<Partial<Record<SdkKind, Sdk[]>>>({});
   const [job, setJob] = useState<Job | null>(null);
   const layout = useRef<HTMLDivElement>(null);
@@ -202,7 +205,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
       live = false;
       clearTimeout(timer);
     };
-  }, [generator, valuesKey]);
+  }, [generator, valuesKey, reqVersion]);
 
   const requestedSdks = useRef(new Set<SdkKind>());
   const sdkKinds = useMemo(
@@ -230,7 +233,27 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
     setValue(fieldId, sdk.home ?? sdk.path);
   };
 
+  const downloadJdkSdk = async (fieldId: string) => {
+    const releaseNum = Number(values.release || values.jvm || 0);
+    const sdk = await openDownloadJdkDialog(Number.isFinite(releaseNum) && releaseNum > 0 ? releaseNum : undefined);
+    if (!sdk) return;
+    setSdksByKind((prev) => {
+      const list = prev.jdk ?? [];
+      return { ...prev, jdk: [sdk, ...list.filter((s) => s.path !== sdk.path)] };
+    });
+    setValue(fieldId, sdk.home ?? sdk.path);
+  };
+
+  const downloadMissingRequirement = async (program: string) => {
+    const runtime = runtimeForProgram(program);
+    if (!runtime) return;
+    const downloaded = await openDownloadToolchainDialog(runtime);
+    if (!downloaded) return;
+    setReqVersion((v) => v + 1);
+  };
+
   const missingCppCompiler = sdkKinds.includes("cpp") && sdksByKind.cpp !== undefined && sdksByKind.cpp.length === 0;
+  const missingJdk = sdkKinds.includes("jdk") && sdksByKind.jdk !== undefined && sdksByKind.jdk.length === 0;
 
   const setValue = (id: string, value: string) =>
     setEdited((all) => ({ ...all, [selected]: { ...(all[selected] ?? {}), [id]: value } }));
@@ -416,6 +439,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
                   onChange={(v) => setValue(f.id, v)}
                   sdksByKind={sdksByKind}
                   onDownloadCpp={() => void downloadCppCompiler(f.id)}
+                  onDownloadJdk={() => void downloadJdkSdk(f.id)}
                 />
               ))}
               {loadingDynamic && (
@@ -451,17 +475,47 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
                 </div>
               </div>
             )}
-            {missing.map((r) => (
-              <div key={r.program} className={styles.missing}>
+            {missingJdk && (
+              <div className={styles.missing}>
                 <Icon name="warning" />
-                <span>
-                  {r.found
-                    ? tx`${r.program} ${r.found} is installed, but this project needs ${r.min ?? ""} or later.`
-                    : tx`${r.program} is not installed.`}{" "}
-                  {r.hint && tx(r.hint)}
-                </span>
+                <div className={styles.missingBody}>
+                  <span>
+                    <T>
+                      No JDK was found on this machine. Download Eclipse Temurin, Microsoft Build of OpenJDK, Amazon
+                      Corretto, or Azul Zulu.
+                    </T>
+                  </span>
+                  <div className={styles.missingActions}>
+                    <Button variant="primary" size="small" onClick={() => void downloadJdkSdk("jdk")}>
+                      Download JDK…
+                    </Button>
+                  </div>
+                </div>
               </div>
-            ))}
+            )}
+            {missing.map((r) => {
+              const downloadable = runtimeForProgram(r.program) !== null;
+              return (
+                <div key={r.program} className={styles.missing}>
+                  <Icon name="warning" />
+                  <div className={styles.missingBody}>
+                    <span>
+                      {r.found
+                        ? tx`${r.program} ${r.found} is installed, but this project needs ${r.min ?? ""} or later.`
+                        : tx`${r.program} is not installed.`}{" "}
+                      {r.hint && tx(r.hint)}
+                    </span>
+                    {downloadable && (
+                      <div className={styles.missingActions}>
+                        <Button variant="primary" size="small" onClick={() => void downloadMissingRequirement(r.program)}>
+                          Download…
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </form>
         </SplitPanel>
       </SplitGroup>
@@ -475,12 +529,14 @@ function FieldRow({
   onChange,
   sdksByKind,
   onDownloadCpp,
+  onDownloadJdk,
 }: {
   field: Field;
   value: string;
   onChange: (value: string) => void;
   sdksByKind: Partial<Record<SdkKind, Sdk[]>>;
   onDownloadCpp: () => void;
+  onDownloadJdk: () => void;
 }) {
   const tx = useTx();
   const id = `np-field-${field.id}`;
@@ -538,7 +594,7 @@ function FieldRow({
     ];
     if (value && !options.some((o) => o.value === value)) options.push({ value, label: value, verbatim: true });
     control =
-      sdkKind === "cpp" ? (
+      sdkKind === "cpp" || sdkKind === "jdk" ? (
         <div className={styles.sdkRow}>
           <Select
             id={id}
@@ -548,7 +604,7 @@ function FieldRow({
             onChange={onChange}
             aria-label={tx(field.label)}
           />
-          <Button size="small" onClick={onDownloadCpp}>
+          <Button size="small" onClick={sdkKind === "cpp" ? onDownloadCpp : onDownloadJdk}>
             Download…
           </Button>
         </div>

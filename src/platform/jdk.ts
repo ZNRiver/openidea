@@ -9,7 +9,22 @@ import { call, commands, nextRequestId, type InstallEvent, type Sdk } from "./ip
 import { tx } from "@/platform/i18n";
 
 export const DOWNLOAD_JDK_ACTION = "java.downloadJdk";
+export const OPEN_DOWNLOAD_JDK_DIALOG_ACTION = "java.openDownloadJdkDialog";
 export const TEMURIN = "temurin";
+
+export interface OpenDownloadJdkDialogArgs {
+  initialVersion?: number;
+  onComplete?: (sdk: Sdk | null) => void;
+}
+
+/** Opens the interactive Download JDK dialog (choose vendor: Temurin, Microsoft, Corretto, Zulu) and resolves with the downloaded SDK, or null if cancelled. */
+export function openDownloadJdkDialog(initialVersion?: number): Promise<Sdk | null> {
+  if (!getAction(OPEN_DOWNLOAD_JDK_DIALOG_ACTION)) return Promise.resolve(null);
+  return new Promise<Sdk | null>((resolve) => {
+    const args: OpenDownloadJdkDialogArgs = { initialVersion, onComplete: resolve };
+    void executeAction(OPEN_DOWNLOAD_JDK_DIALOG_ACTION, args).catch(() => resolve(null));
+  });
+}
 
 export interface DownloadJdkArgs {
   /** Java feature version, e.g. 25. */

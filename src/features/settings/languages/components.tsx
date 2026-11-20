@@ -9,6 +9,7 @@ import { useSetting } from "../components/context";
 import { detectSdks, rememberSdk, useSdks, type Sdk, type SdkKind } from "./api";
 import { choosePath } from "@/platform/choosePath";
 import { openDownloadCppDialog } from "@/platform/cpp";
+import { openDownloadToolchainDialog } from "@/platform/toolchain";
 import { DownloadJdkDialog } from "./DownloadJdkDialog";
 import styles from "./Sdk.module.css";
 
@@ -71,8 +72,21 @@ export interface SdkFieldProps {
 const DOWNLOAD_JDK = "\u0000download-jdk";
 /** The "Download C/C++ Compiler…" entry of C/C++ combos (not a value). */
 const DOWNLOAD_CPP = "\u0000download-cpp";
+/** The "Download SDK / Toolchain…" entry of other language SDK combos (not a value). */
+const DOWNLOAD_TOOLCHAIN = "\u0000download-toolchain";
 
-/** IDEA's SDK combo: detected installations, the current custom path, and a browse button; JDK combos also offer Download JDK…. */
+const TOOLCHAIN_DOWNLOAD_BY_KIND: Partial<Record<SdkKind, { runtime: string; label: string }>> = {
+  python: { runtime: "python", label: "Download uv + Python…" },
+  node: { runtime: "node", label: "Download Node.js / Runtime…" },
+  rust: { runtime: "rust", label: "Download Rust (rustup)…" },
+  go: { runtime: "go", label: "Download Go SDK…" },
+  zig: { runtime: "zig", label: "Download Zig…" },
+  php: { runtime: "php", label: "Download PHP + Composer…" },
+  maven: { runtime: "java-build", label: "Download Maven / Gradle…" },
+  ruby: { runtime: "ruby", label: "Download Ruby…" },
+};
+
+/** IDEA's SDK combo: detected installations, the current custom path, and a browse button; downloadable SDKs offer Download…. */
 export function SdkField({
   kind,
   value,
@@ -89,6 +103,7 @@ export function SdkField({
   ...aria
 }: SdkFieldProps) {
   const { list, loading, refresh } = useDetected(kind);
+  const toolchainDownload = TOOLCHAIN_DOWNLOAD_BY_KIND[kind];
   const options = useMemo<SelectOption[]>(() => {
     const out: SelectOption[] = [];
     const norm = (path: string) => path.replace(/\\/g, "/").toLowerCase();
@@ -112,8 +127,9 @@ export function SdkField({
     }
     if (kind === "jdk") out.push({ value: DOWNLOAD_JDK, label: "Download JDK…", icon: "plus" });
     if (kind === "cpp") out.push({ value: DOWNLOAD_CPP, label: "Download C/C++ Compiler…", icon: "plus" });
+    if (toolchainDownload) out.push({ value: DOWNLOAD_TOOLCHAIN, label: toolchainDownload.label, icon: "plus" });
     return out;
-  }, [list, value, emptyLabel, emptyDetail, extra, exclude, optionIcon, kind, minJava, invalid]);
+  }, [list, value, emptyLabel, emptyDetail, extra, exclude, optionIcon, kind, minJava, invalid, toolchainDownload]);
   const [downloading, setDownloading] = useState(false);
   const browse = async () => {
     const picked = await choosePath({ directory: !!directory, title: browseTitle, defaultPath: value || undefined });
@@ -127,6 +143,19 @@ export function SdkField({
         if (!sdk) return;
         rememberSdk("cpp", sdk);
         onChange(sdk.path);
+      });
+    } else if (v === DOWNLOAD_TOOLCHAIN && toolchainDownload) {
+      void openDownloadToolchainDialog(toolchainDownload.runtime).then((downloaded) => {
+        if (!downloaded) return;
+        void detectSdks(kind, true).then((updated) => {
+          const match = updated.find(
+            (s) =>
+              s.path.startsWith(downloaded.home) ||
+              s.path.startsWith(downloaded.binDir) ||
+              s.home === downloaded.home,
+          );
+          if (match) onChange(match.path);
+        });
       });
     } else {
       onChange(v);

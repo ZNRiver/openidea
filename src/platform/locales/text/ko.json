@@ -4610,7 +4610,7 @@
   "{count} modified action": "수정된 액션 {count}개",
   "{count} modified actions": "수정된 액션 {count}개",
   "Runs “<base> -m venv <location>”; the new interpreter becomes the project interpreter.": "“<base> -m venv <location>”을 실행합니다. 새 인터프리터가 프로젝트 인터프리터가 됩니다.",
-  "{vendor} {version} is unpacked into a folder of its own in {location}, where JDK detection finds it.": "{vendor} {version}이(가) {location} 안의 별도 폴더에 압축 해제되며, JDK 감지 기능이 이를 찾습니다.",
+  "{vendor} {version} is unpacked into a folder of its own in {location}, added to JAVA_HOME and PATH, and detected automatically.": "{vendor} {version}이(가) {location} 안의 별도 폴더에 압축 해제되고 JAVA_HOME과 PATH에 추가되어 자동으로 감지됩니다.",
   "detected from {source}": "{source}에서 감지됨",
   "modified": "수정됨",
   "seconds": "초",
