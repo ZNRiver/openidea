@@ -130,7 +130,7 @@ fn login_shell() -> String {
 
 #[cfg(unix)]
 fn path_cache(identifier: &str) -> Option<std::path::PathBuf> {
-    dirs::cache_dir().map(|d| d.join(identifier).join("login-path"))
+    crate::data_dirs::cache_dir(identifier).map(|d| d.join("login-path"))
 }
 
 #[cfg(unix)]

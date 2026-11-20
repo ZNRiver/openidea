@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// Moves the rebuildable local data (tools, language servers, indexes, caches).
 pub const LOCAL_DATA_ENV: &str = "OPENIDEA_LOCAL_DATA_DIR";
@@ -14,30 +15,91 @@ pub const DATA_ENV: &str = "OPENIDEA_DATA_DIR";
 /// Moves the logs.
 pub const LOG_ENV: &str = "OPENIDEA_LOG_DIR";
 
-/// `$OPENIDEA_CONFIG_DIR/<identifier>` when set, else the OS configuration directory
-/// (Tauri's `app_config_dir`). Like the local data, the identifier keeps release and
-/// per-worktree debug builds apart under one root; a relative path is an error.
+/// Directory containing the running executable (or the directory next to the
+/// `.AppImage` on Linux / `.app` bundle on macOS).
+pub fn exe_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    if let Some(appimage) = std::env::var_os("APPIMAGE").filter(|v| !v.is_empty()) {
+        let path = PathBuf::from(appimage);
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            return Some(parent.to_path_buf());
+        }
+    }
+    let exe = std::env::current_exe().ok()?;
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = exe.parent().and_then(Path::parent).and_then(Path::parent)
+        && bundle.extension().is_some_and(|e| e == "app")
+        && let Some(parent) = bundle.parent().filter(|p| !p.as_os_str().is_empty())
+    {
+        return Some(parent.to_path_buf());
+    }
+    exe.parent().map(Path::to_path_buf)
+}
+
+/// Writable base directory next to the executable where portable configs,
+/// downloaded utilities, caches, data and logs are stored.
+pub fn portable_root() -> Option<PathBuf> {
+    static ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let dir = exe_dir()?;
+        tempfile::NamedTempFile::new_in(&dir).ok()?;
+        Some(dir)
+    })
+    .clone()
+}
+
+/// `$OPENIDEA_CONFIG_DIR/<identifier>` when set, else `<exe_dir>/config` when
+/// writable next to the executable, falling back to the OS configuration directory.
 pub fn config_dir(identifier: &str) -> Result<PathBuf, String> {
-    resolve_env(CONFIG_ENV, std::env::var_os(CONFIG_ENV), dirs::config_dir(), identifier)
+    let var = std::env::var_os(CONFIG_ENV);
+    if var.as_ref().is_none_or(|v| v.is_empty())
+        && let Some(root) = portable_root()
+    {
+        return Ok(root.join("config"));
+    }
+    resolve_env(CONFIG_ENV, var, dirs::config_dir(), identifier)
 }
 
-/// `$OPENIDEA_DATA_DIR/<identifier>` when set, else the OS data directory (Tauri's `app_data_dir`).
+/// `$OPENIDEA_DATA_DIR/<identifier>` when set, else `<exe_dir>/data` when
+/// writable next to the executable, falling back to the OS data directory.
 pub fn data_dir(identifier: &str) -> Result<PathBuf, String> {
-    resolve_env(DATA_ENV, std::env::var_os(DATA_ENV), dirs::data_dir(), identifier)
+    let var = std::env::var_os(DATA_ENV);
+    if var.as_ref().is_none_or(|v| v.is_empty())
+        && let Some(root) = portable_root()
+    {
+        return Ok(root.join("data"));
+    }
+    resolve_env(DATA_ENV, var, dirs::data_dir(), identifier)
 }
 
-/// `$OPENIDEA_LOG_DIR/<identifier>` when set, else `~/Library/Logs/<identifier>` on macOS and
-/// `<local data>/<identifier>/logs` elsewhere (Tauri's `app_log_dir`).
+/// `$OPENIDEA_LOG_DIR/<identifier>` when set, else `<exe_dir>/logs` when
+/// writable next to the executable, falling back to the OS log directory.
 pub fn log_dir(identifier: &str) -> Result<PathBuf, String> {
+    if let Some(var) = std::env::var_os(LOG_ENV).filter(|v| !v.is_empty()) {
+        return resolve_env(LOG_ENV, Some(var), None, identifier);
+    }
+    if let Some(root) = portable_root() {
+        return Ok(root.join("logs"));
+    }
     let os = if cfg!(target_os = "macos") {
         dirs::home_dir().map(|home| home.join("Library/Logs").join(identifier))
     } else {
         dirs::data_local_dir().map(|dir| dir.join(identifier).join("logs"))
     };
-    match std::env::var_os(LOG_ENV).filter(|v| !v.is_empty()) {
-        Some(var) => resolve_env(LOG_ENV, Some(var), None, identifier),
-        None => os.ok_or_else(|| "cannot find the log directory".into()),
+    os.ok_or_else(|| "cannot find the log directory".into())
+}
+
+/// `<exe_dir>/data/cache` when writable next to the executable, else the OS cache directory.
+pub fn cache_dir(identifier: &str) -> Option<PathBuf> {
+    if let Some(root) = portable_root() {
+        return Some(root.join("data").join("cache"));
     }
+    dirs::cache_dir().map(|dir| dir.join(identifier))
+}
+
+/// WebView profile directory next to the executable (`<exe_dir>/data/webview`).
+pub fn webview_data_dir() -> Option<PathBuf> {
+    portable_root().map(|root| root.join("data").join("webview"))
 }
 
 /// The directory under `$<env>` when set (absolute, not created here), else under the OS directory.
@@ -60,19 +122,33 @@ pub const OVERRIDE_FILE: &str = "local-data-dir.txt";
 /// at the next start (before any project opens), like File › Invalidate Caches.
 const MIGRATION_FILE: &str = "local-data-migration.json";
 
-/// `$OPENIDEA_LOCAL_DATA_DIR/<identifier>` when set, else the OS local data directory
-/// (Tauri's `app_local_data_dir`). The identifier keeps release and per-worktree
-/// debug builds apart under one root. A set but unusable path is an error, never a
-/// silent fallback to the OS location.
+/// `$OPENIDEA_LOCAL_DATA_DIR/<identifier>` when set, else `<exe_dir>/data` when
+/// writable next to the executable, falling back to the OS local data directory.
+/// A set but unusable path is an error, never a silent fallback to the OS location.
 pub fn local_data_dir(identifier: &str) -> Result<PathBuf, String> {
-    resolve_local(std::env::var_os(LOCAL_DATA_ENV), dirs::data_local_dir(), identifier)
+    let var = std::env::var_os(LOCAL_DATA_ENV);
+    if var.as_ref().is_none_or(|v| v.is_empty())
+        && let Some(root) = portable_root()
+    {
+        return Ok(root.join("data"));
+    }
+    resolve_local(var, dirs::data_local_dir(), identifier)
 }
 
 /// The directory to actually start with: the environment override, else a valid
-/// custom directory from Settings, else the OS default. A stored but unusable
-/// custom directory is an error, never a silent fallback.
+/// custom directory from Settings, else `<exe_dir>/data` when writable next to
+/// the executable, else the OS default. A stored but unusable custom directory
+/// is an error, never a silent fallback.
 pub fn startup_local_data_dir(identifier: &str) -> Result<PathBuf, String> {
-    startup_resolve(std::env::var_os(LOCAL_DATA_ENV), stored_override(identifier), dirs::data_local_dir(), identifier)
+    let var = std::env::var_os(LOCAL_DATA_ENV);
+    let stored = stored_override(identifier);
+    if var.as_ref().is_none_or(|v| v.is_empty())
+        && stored.is_none()
+        && let Some(root) = portable_root()
+    {
+        return Ok(root.join("data"));
+    }
+    startup_resolve(var, stored, dirs::data_local_dir(), identifier)
 }
 
 fn startup_resolve(
@@ -985,5 +1061,24 @@ mod tests {
         }
         // Registry agent files name their executables by absolute path.
         assert!(!entries.iter().any(|e| e.starts_with("agents/tools")), "{entries:?}");
+    }
+
+    #[test]
+    fn portable_dirs_resolve_next_to_executable() {
+        let Some(root) = portable_root() else { return };
+        if std::env::var_os(CONFIG_ENV).is_none() {
+            assert_eq!(config_dir("ai.test.openidea").unwrap(), root.join("config"));
+        }
+        if std::env::var_os(DATA_ENV).is_none() {
+            assert_eq!(data_dir("ai.test.openidea").unwrap(), root.join("data"));
+        }
+        if std::env::var_os(LOCAL_DATA_ENV).is_none() {
+            assert_eq!(local_data_dir("ai.test.openidea").unwrap(), root.join("data"));
+        }
+        if std::env::var_os(LOG_ENV).is_none() {
+            assert_eq!(log_dir("ai.test.openidea").unwrap(), root.join("logs"));
+        }
+        assert_eq!(cache_dir("ai.test.openidea"), Some(root.join("data").join("cache")));
+        assert_eq!(webview_data_dir(), Some(root.join("data").join("webview")));
     }
 }

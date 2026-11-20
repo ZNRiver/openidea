@@ -1,6 +1,5 @@
 //! Logging: stdout (as before) plus a daily-rotated file in the app log dir
-//! (`~/Library/Logs/<identifier>` on macOS, `<local data>/<identifier>/logs`
-//! elsewhere — the same place as Tauri's `app_log_dir` — or under `OPENIDEA_LOG_DIR`).
+//! (`<exe_dir>/logs` in portable mode, or the OS log directory / `OPENIDEA_LOG_DIR`).
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -127,8 +126,8 @@ mod tests {
     }
 
     #[test]
-    fn log_dir_is_per_identifier() {
+    fn log_dir_resolves_a_logs_directory() {
         let d = log_dir_for("com.example.x").unwrap();
-        assert!(d.to_string_lossy().contains("com.example.x"));
+        assert!(d.ends_with("logs") || d.to_string_lossy().contains("com.example.x"));
     }
 }
