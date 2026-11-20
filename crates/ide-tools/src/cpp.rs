@@ -182,12 +182,39 @@ pub struct WinSysrootLayout {
     pub msvc_version: String,
     pub sdk_version: String,
     pub arch: String,
+    /// True when library directories use Microsoft arch names (`x64`/`arm64`) required by `clang-cl /winsysroot`.
+    pub uses_ms_arch: bool,
     pub include_dirs: Vec<PathBuf>,
     pub lib_dirs: Vec<PathBuf>,
 }
 
+fn arch_dir_candidates(arch: &str) -> [&'static str; 2] {
+    match arch {
+        "arm64" | "aarch64" => ["arm64", "aarch64"],
+        _ => ["x64", "x86_64"],
+    }
+}
+
+fn find_arch_subdir(parent: &Path, arch: &str) -> Option<(PathBuf, bool)> {
+    let [ms, llvm] = arch_dir_candidates(arch);
+    let ms_dir = parent.join(ms);
+    if ms_dir.is_dir() {
+        return Some((ms_dir, true));
+    }
+    let llvm_dir = parent.join(llvm);
+    if llvm_dir.is_dir() {
+        return Some((llvm_dir, false));
+    }
+    None
+}
+
+fn first_existing_dir(parent: &Path, names: &[&str]) -> Option<PathBuf> {
+    names.iter().map(|n| parent.join(n)).find(|p| p.is_dir())
+}
+
 /// Inspects a `xwin --use-winsysroot-style` directory and resolves the MSVC CRT and Windows SDK
-/// include & library paths for `arch` (`"x64"` or `"arm64"`).
+/// include & library paths for `arch` (`"x64"` or `"arm64"`). Accepts both Microsoft (`x64`/`arm64`)
+/// and LLVM (`x86_64`/`aarch64`) arch directory names.
 pub fn inspect_winsysroot(winsysroot: &Path, arch: &str) -> Option<WinSysrootLayout> {
     let newest_dir = |parent: &Path| -> Option<(String, PathBuf)> {
         let mut dirs: Vec<(String, PathBuf)> = std::fs::read_dir(parent)
@@ -202,12 +229,13 @@ pub fn inspect_winsysroot(winsysroot: &Path, arch: &str) -> Option<WinSysrootLay
 
     let (msvc_version, msvc_root) = newest_dir(&winsysroot.join("VC").join("Tools").join("MSVC"))?;
     let sdk_base = winsysroot.join("Windows Kits").join("10");
-    let (sdk_version, sdk_include_root) = newest_dir(&sdk_base.join("Include"))?;
-    let sdk_lib_root = sdk_base.join("Lib").join(&sdk_version);
+    let sdk_include_base = first_existing_dir(&sdk_base, &["Include", "include"])?;
+    let (sdk_version, sdk_include_root) = newest_dir(&sdk_include_base)?;
+    let sdk_lib_base = first_existing_dir(&sdk_base, &["Lib", "lib"])?;
+    let sdk_lib_root = sdk_lib_base.join(&sdk_version);
 
     let mut include_dirs = Vec::new();
-    let msvc_inc = msvc_root.join("include");
-    if msvc_inc.is_dir() {
+    if let Some(msvc_inc) = first_existing_dir(&msvc_root, &["include", "Include"]) {
         include_dirs.push(msvc_inc);
     }
     for sub in ["ucrt", "um", "shared", "winrt", "cppwinrt"] {
@@ -218,13 +246,16 @@ pub fn inspect_winsysroot(winsysroot: &Path, arch: &str) -> Option<WinSysrootLay
     }
 
     let mut lib_dirs = Vec::new();
-    let msvc_lib = msvc_root.join("lib").join(arch);
-    if msvc_lib.is_dir() {
-        lib_dirs.push(msvc_lib);
+    let mut uses_ms_arch = true;
+    if let Some(msvc_lib_base) = first_existing_dir(&msvc_root, &["lib", "Lib"])
+        && let Some((dir, is_ms)) = find_arch_subdir(&msvc_lib_base, arch)
+    {
+        uses_ms_arch &= is_ms;
+        lib_dirs.push(dir);
     }
     for sub in ["ucrt", "um"] {
-        let dir = sdk_lib_root.join(sub).join(arch);
-        if dir.is_dir() {
+        if let Some((dir, is_ms)) = find_arch_subdir(&sdk_lib_root.join(sub), arch) {
+            uses_ms_arch &= is_ms;
             lib_dirs.push(dir);
         }
     }
@@ -233,7 +264,14 @@ pub fn inspect_winsysroot(winsysroot: &Path, arch: &str) -> Option<WinSysrootLay
         return None;
     }
 
-    Some(WinSysrootLayout { msvc_version, sdk_version, arch: arch.to_owned(), include_dirs, lib_dirs })
+    Some(WinSysrootLayout {
+        msvc_version,
+        sdk_version,
+        arch: arch.to_owned(),
+        uses_ms_arch,
+        include_dirs,
+        lib_dirs,
+    })
 }
 
 /// Writes portable Clang `.cfg` files inside `bin_dir` and a `toolchain.cmake` file inside
@@ -260,7 +298,24 @@ pub fn write_llvm_winsdk_configs(
     }
     let rel_sysroot = format!("{prefix}/winsysroot");
 
-    let clang_cl_cfg = format!("-fuse-ld=lld\n/winsysroot\n{rel_sysroot}\n");
+    let clang_cl_cfg = if layout.uses_ms_arch {
+        format!("-fuse-ld=lld\n/winsysroot\n{rel_sysroot}\n")
+    } else {
+        let mut cfg = String::from("-fuse-ld=lld\n");
+        for inc in &layout.include_dirs {
+            if let Ok(rel) = inc.strip_prefix(winsysroot) {
+                let rel_s = rel.to_string_lossy().replace('\\', "/");
+                cfg.push_str(&format!("\"-imsvc{rel_sysroot}/{rel_s}\"\n"));
+            }
+        }
+        for lib in &layout.lib_dirs {
+            if let Ok(rel) = lib.strip_prefix(winsysroot) {
+                let rel_s = rel.to_string_lossy().replace('\\', "/");
+                cfg.push_str(&format!("\"-L{rel_sysroot}/{rel_s}\"\n"));
+            }
+        }
+        cfg
+    };
     std::fs::write(bin_dir.join("clang-cl.cfg"), clang_cl_cfg)?;
 
     // GNU-style `clang` and `clang++` read `clang.cfg` / `clang++.cfg` from their own directory.
@@ -578,6 +633,7 @@ impl Tools {
         });
         let cache_dir = location.join(".xwin-cache");
         std::fs::create_dir_all(&cache_dir)?;
+        let _ = std::fs::remove_dir_all(winsysroot);
         let mut cmd = self.command(&xwin_exe);
         cmd.args([
             "--accept-license",
@@ -586,7 +642,13 @@ impl Tools {
             "--cache-dir",
         ])
         .arg(&cache_dir)
-        .args(["splat", "--use-winsysroot-style", "--output"])
+        .args([
+            "splat",
+            "--use-winsysroot-style",
+            "--preserve-ms-arch-notation",
+            "--disable-symlinks",
+            "--output",
+        ])
         .arg(winsysroot);
         let result = run_streamed(cmd, cancel, emit);
         let _ = std::fs::remove_dir_all(&cache_dir);
@@ -819,6 +881,30 @@ mod tests {
         let cmake = std::fs::read_to_string(root.join("toolchain.cmake")).unwrap();
         assert!(cmake.contains("CMAKE_CXX_COMPILER"));
         assert!(cmake.contains("x86_64-pc-windows-msvc"));
+        assert!(layout.uses_ms_arch);
+    }
+
+    #[test]
+    fn winsysroot_accepts_llvm_arch_notation_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("llvm-winsdk-23.1.6");
+        let bin = root.join("bin");
+        let sysroot = root.join("winsysroot");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(sysroot.join("VC/Tools/MSVC/14.44.35207/include")).unwrap();
+        std::fs::create_dir_all(sysroot.join("VC/Tools/MSVC/14.44.35207/lib/x86_64")).unwrap();
+        std::fs::create_dir_all(sysroot.join("Windows Kits/10/Include/10.0.26100.0/ucrt")).unwrap();
+        std::fs::create_dir_all(sysroot.join("Windows Kits/10/Lib/10.0.26100.0/ucrt/x86_64")).unwrap();
+
+        let layout = inspect_winsysroot(&sysroot, "x64").unwrap();
+        assert!(!layout.uses_ms_arch);
+        assert_eq!(layout.include_dirs.len(), 2);
+        assert_eq!(layout.lib_dirs.len(), 2);
+
+        write_llvm_winsdk_configs(&root, &bin, &sysroot, "x64").unwrap();
+        let cl_cfg = std::fs::read_to_string(bin.join("clang-cl.cfg")).unwrap();
+        assert!(cl_cfg.contains("-imsvc"));
+        assert!(cl_cfg.contains("x86_64"));
     }
 
     #[test]

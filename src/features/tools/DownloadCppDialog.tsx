@@ -186,10 +186,14 @@ export function DownloadCppDialog({
           )}
         </div>
 
-        {progress && (
+        {(progress || lines.length > 0) && (
           <div className={styles.progress}>
-            <ProgressBar value={progress.fraction} aria-label={tx("Downloading C/C++ compiler")} />
-            <span className={styles.note}>{progress.message}</span>
+            {progress && (
+              <>
+                <ProgressBar value={progress.fraction} aria-label={tx("Downloading C/C++ compiler")} />
+                <span className={styles.note}>{progress.message}</span>
+              </>
+            )}
             {lines.length > 0 && (
               <pre ref={logRef} className={styles.log} aria-label={tx("Output")} tabIndex={0}>
                 {lines.join("\n")}

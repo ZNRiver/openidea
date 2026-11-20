@@ -62,6 +62,7 @@ fn current_win_arch() -> &'static str {
 }
 
 /// Resolves include and library directories inside a `xwin --use-winsysroot-style` folder.
+/// Accepts both Microsoft (`x64`/`arm64`) and LLVM (`x86_64`/`aarch64`) arch directory names.
 fn winsysroot_dirs(winsysroot: &Path, arch: &str) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let newest_dir = |parent: &Path| -> Option<PathBuf> {
         let mut dirs: Vec<(String, PathBuf)> = std::fs::read_dir(parent)
@@ -73,20 +74,29 @@ fn winsysroot_dirs(winsysroot: &Path, arch: &str) -> (Vec<PathBuf>, Vec<PathBuf>
         dirs.sort_by(|a, b| ide_core::tool_path::version_key(&b.0).cmp(&ide_core::tool_path::version_key(&a.0)));
         dirs.into_iter().next().map(|(_, p)| p)
     };
+    let arch_dirs: [&str; 2] = match arch {
+        "arm64" | "aarch64" => ["arm64", "aarch64"],
+        _ => ["x64", "x86_64"],
+    };
+    let find_arch = |parent: &Path| arch_dirs.iter().map(|a| parent.join(a)).find(|p| p.is_dir());
+    let first_dir = |parent: &Path, names: &[&str]| names.iter().map(|n| parent.join(n)).find(|p| p.is_dir());
+
     let mut includes = Vec::new();
     let mut libs = Vec::new();
     if let Some(msvc) = newest_dir(&winsysroot.join("VC").join("Tools").join("MSVC")) {
-        let inc = msvc.join("include");
-        if inc.is_dir() {
+        if let Some(inc) = first_dir(&msvc, &["include", "Include"]) {
             includes.push(inc);
         }
-        let lib = msvc.join("lib").join(arch);
-        if lib.is_dir() {
+        if let Some(lib_base) = first_dir(&msvc, &["lib", "Lib"])
+            && let Some(lib) = find_arch(&lib_base)
+        {
             libs.push(lib);
         }
     }
     let sdk_base = winsysroot.join("Windows Kits").join("10");
-    if let Some(sdk_inc) = newest_dir(&sdk_base.join("Include")) {
+    if let Some(sdk_inc_base) = first_dir(&sdk_base, &["Include", "include"])
+        && let Some(sdk_inc) = newest_dir(&sdk_inc_base)
+    {
         let ver = sdk_inc.file_name().map(|n| n.to_string_lossy().into_owned());
         for sub in ["ucrt", "um", "shared", "winrt", "cppwinrt"] {
             let dir = sdk_inc.join(sub);
@@ -94,11 +104,12 @@ fn winsysroot_dirs(winsysroot: &Path, arch: &str) -> (Vec<PathBuf>, Vec<PathBuf>
                 includes.push(dir);
             }
         }
-        if let Some(ver) = ver {
-            let sdk_lib = sdk_base.join("Lib").join(ver);
+        if let Some(ver) = ver
+            && let Some(sdk_lib_base) = first_dir(&sdk_base, &["Lib", "lib"])
+        {
+            let sdk_lib = sdk_lib_base.join(ver);
             for sub in ["ucrt", "um"] {
-                let dir = sdk_lib.join(sub).join(arch);
-                if dir.is_dir() {
+                if let Some(dir) = find_arch(&sdk_lib.join(sub)) {
                     libs.push(dir);
                 }
             }
