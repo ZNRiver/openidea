@@ -18,6 +18,8 @@ jobs:
   build:
     name: Build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
+    env:
+      CACHE_ON_FAILURE: "true"
     strategy:
       fail-fast: false
       matrix:
@@ -99,10 +101,33 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          STORE_PATH="$(pnpm store path --silent | tr -d '\r')"
+          echo "STORE_PATH=${STORE_PATH}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store cache
+        id: pnpm-cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ matrix.name }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ matrix.name }}-pnpm-store-
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Save pnpm store cache
+        if: always() && steps.pnpm-cache-restore.outputs.cache-hit != 'true' && steps.pnpm-cache.outputs.STORE_PATH != ''
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ steps.pnpm-cache-restore.outputs.cache-primary-key }}
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -113,6 +138,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}
+          cache-on-failure: "true"
+          save-if: "true"
 
       - name: Build desktop application
         env:
