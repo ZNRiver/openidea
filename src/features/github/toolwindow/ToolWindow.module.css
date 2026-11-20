@@ -1,0 +1,78 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+.content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.content[hidden] {
+  display: none;
+}
+/* IntelliJ's list tab: 8px above the search panel. */
+.listTab {
+  padding-top: 8px;
+}
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1-5);
+  height: 100%;
+  color: var(--fg-secondary);
+}
+.hint {
+  margin-top: 4px;
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+
+/* Header */
+.tabs {
+  min-width: 0;
+}
+
+/* Repository selector (several GitHub remotes) */
+.selector {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 12px;
+}
+.selectorRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.error {
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+/* Busy banner (checkout, fetching for a diff) */
+.banner {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-height: 26px;
+  padding: 0 6px 0 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  font-size: var(--fs-small);
+}
+.bannerText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Placeholder panels */

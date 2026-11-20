@@ -1,0 +1,851 @@
+/**
+ * Editor colour schemes (Settings › Editor › Color Scheme). A scheme is the
+ * editor part of a theme's tokens (`--syn-*`, editor surfaces, gutter,
+ * search, diagnostics), read from `styles/tokens.css` so the scheme list never
+ * drifts from the themes. Choosing a scheme other than the theme's own, or
+ * editing an attribute, injects those variables into one stylesheet.
+ *
+ * Attribute ids are stable (they key `editor.colorOverrides[scheme][id]`).
+ */
+import tokensCss from "@/styles/tokens.css?raw";
+import type { CustomColorSchemes, TextAttributesOverride } from "./editorSettings";
+import { BUILTIN_THEMES, isBuiltinTheme, themeKind, type BuiltinThemeId } from "./themes";
+
+export type SchemeId = BuiltinThemeId;
+
+export const SCHEMES: ReadonlyArray<{ id: SchemeId; name: string }> = BUILTIN_THEMES.map((t) => ({
+  id: t.id,
+  name: t.label,
+}));
+
+export interface AttributeDef {
+  id: string;
+  name: string;
+  /** Tree path below the root, e.g. ["Language Defaults", "Comments"]. */
+  path: string[];
+  /** CSS variable of the foreground / background / effect colour, if editable. */
+  fg?: string;
+  /** `fg` paints over the syntax colours: without one, they show through. */
+  fgOverlay?: true;
+  bg?: string;
+  effect?: string;
+  /** Syntax token: bold / italic / background / effect come from `--syn-<token>-*`. */
+  token?: string;
+  /** A semantic modifier whose only configurable attribute is italic. */
+  italicOnly?: boolean;
+  /** The attribute's renderer applies font style and effects (tokens, the Git surfaces,
+   * Errors and Warnings): overrides land on `--<fg|effect>-*`. */
+  fontStyle?: true;
+  defaultBold?: boolean;
+  defaultItalic?: boolean;
+  defaultEffect?: TextAttributesOverride["effect"];
+  /** CodeMirror language name; unset attributes are language defaults. */
+  language?: string;
+}
+
+const syn = (
+  id: string,
+  name: string,
+  path: string[],
+  token: string,
+  defaults: Pick<AttributeDef, "defaultBold" | "defaultItalic" | "defaultEffect"> = {},
+): AttributeDef => ({
+  id,
+  name,
+  path,
+  token,
+  fontStyle: true,
+  fg: `--syn-${token}`,
+  ...defaults,
+});
+
+const LD = "Language Defaults";
+
+/** A Python page attribute: language-scoped, so its overrides apply to Python editors only. */
+const py = (
+  id: string,
+  name: string,
+  token: string,
+  defaults: Pick<AttributeDef, "defaultBold" | "defaultItalic" | "defaultEffect"> = {},
+): AttributeDef => ({ ...syn(id, name, ["Python"], token, defaults), language: "Python" });
+
+/** IDEA-style attribute tree: General, Language Defaults, then languages. */
+const BASE_ATTRIBUTES: readonly AttributeDef[] = [
+  { id: "text", name: "Default text", path: ["General", "Text"], fg: "--fg-editor", bg: "--bg-editor" },
+  { id: "caret", name: "Caret", path: ["General", "Editor"], fg: "--caret" },
+  { id: "caretRow", name: "Caret row", path: ["General", "Editor"], bg: "--bg-current-line" },
+  {
+    id: "selection",
+    name: "Selection background",
+    path: ["General", "Editor"],
+    bg: "--bg-editor-selection",
+  },
+  {
+    id: "selectionForeground",
+    name: "Selection foreground",
+    path: ["General", "Editor"],
+    fg: "--fg-editor-selection",
+  },
+  {
+    id: "selectionInactive",
+    name: "Selection background (inactive)",
+    path: ["General", "Editor"],
+    bg: "--bg-editor-selection-inactive",
+  },
+  { id: "whitespaces", name: "Whitespaces", path: ["General", "Editor"], fg: "--fg-whitespace" },
+  { id: "indentGuide", name: "Indent guide", path: ["General", "Editor"], fg: "--border-indent-guide" },
+  { id: "rightMargin", name: "Hard wrap guide", path: ["General", "Editor"], fg: "--border-right-margin" },
+  {
+    id: "methodSeparator",
+    name: "Method separator color",
+    path: ["General", "Editor"],
+    fg: "--border-method-separator",
+  },
+  { id: "lineNumber", name: "Line number", path: ["General", "Code"], fg: "--fg-line-number" },
+  {
+    id: "lineNumberCaret",
+    name: "Line number on caret row",
+    path: ["General", "Code"],
+    fg: "--fg-line-number-current",
+  },
+  { id: "gutter", name: "Gutter background", path: ["General", "Code"], bg: "--bg-editor-gutter" },
+  { id: "matchedBrace", name: "Matched brace", path: ["General", "Code"], bg: "--bg-matched-brace" },
+  {
+    id: "identifierUnderCaret",
+    name: "Identifier under caret",
+    path: ["General", "Code"],
+    fg: "--fg-identifier-under-caret",
+    fgOverlay: true,
+    bg: "--bg-identifier-under-caret",
+  },
+  {
+    id: "identifierUnderCaretWrite",
+    name: "Identifier under caret (write)",
+    path: ["General", "Code"],
+    fg: "--fg-identifier-under-caret-write",
+    fgOverlay: true,
+    bg: "--bg-identifier-under-caret-write",
+  },
+  { id: "inlay", name: "Inlay hints", path: ["General", "Code"], fg: "--fg-inlay", bg: "--bg-inlay" },
+  {
+    id: "folded",
+    name: "Folded text",
+    path: ["General", "Code"],
+    fg: "--fg-fold-placeholder",
+    bg: "--bg-fold-placeholder",
+  },
+  {
+    id: "searchResult",
+    name: "Search result",
+    path: ["General", "Search Results"],
+    bg: "--bg-search-match",
+  },
+  {
+    id: "searchResultCurrent",
+    name: "Current search result",
+    path: ["General", "Search Results"],
+    bg: "--bg-search-match-current",
+  },
+  {
+    id: "error",
+    name: "Error",
+    path: ["General", "Errors and Warnings"],
+    effect: "--wave-error",
+    defaultEffect: "wave",
+    fontStyle: true,
+  },
+  {
+    id: "warning",
+    name: "Warning",
+    path: ["General", "Errors and Warnings"],
+    effect: "--wave-warning",
+    defaultEffect: "wave",
+    fontStyle: true,
+  },
+  { id: "weakWarning", name: "Weak warning", path: ["General", "Errors and Warnings"], fg: "--fg-weak-warning" },
+  {
+    id: "typo",
+    name: "Typo",
+    path: ["General", "Errors and Warnings"],
+    effect: "--wave-typo",
+    defaultEffect: "wave",
+    fontStyle: true,
+  },
+  {
+    id: "unused",
+    name: "Unused symbol",
+    path: ["General", "Errors and Warnings"],
+    fg: "--fg-unused",
+    fontStyle: true,
+  },
+  {
+    id: "deprecated",
+    name: "Deprecated symbol",
+    path: ["General", "Errors and Warnings"],
+    effect: "--fg-deprecated",
+    defaultEffect: "strikeout",
+    fontStyle: true,
+  },
+  syn("invalid", "Bad character", ["General", "Errors and Warnings"], "invalid"),
+  syn("todo", "TODO defaults", ["General", "Code"], "todo"),
+  { id: "inlineValue", name: "Inline debugger values", path: ["Debugger"], fg: "--syn-inline-value" },
+  { id: "breakpointLine", name: "Breakpoint line", path: ["Debugger"], bg: "--bg-breakpoint-line" },
+
+  // Console / terminal: IDEA's Console Colors (background + 16 ANSI). `--ansi-*` is mirrored
+  // to `--terminal-ansi-*` in overrideDeclarations so the terminal picks up edits.
+  {
+    id: "consoleBackground",
+    name: "Console background",
+    path: ["Console Colors"],
+    bg: "--bg-console",
+  },
+  { id: "ansiBlack", name: "Black", path: ["Console Colors"], fg: "--ansi-black" },
+  { id: "ansiRed", name: "Red", path: ["Console Colors"], fg: "--ansi-red" },
+  { id: "ansiGreen", name: "Green", path: ["Console Colors"], fg: "--ansi-green" },
+  { id: "ansiYellow", name: "Yellow", path: ["Console Colors"], fg: "--ansi-yellow" },
+  { id: "ansiBlue", name: "Blue", path: ["Console Colors"], fg: "--ansi-blue" },
+  { id: "ansiMagenta", name: "Magenta", path: ["Console Colors"], fg: "--ansi-magenta" },
+  { id: "ansiCyan", name: "Cyan", path: ["Console Colors"], fg: "--ansi-cyan" },
+  { id: "ansiWhite", name: "White", path: ["Console Colors"], fg: "--ansi-white" },
+  { id: "ansiBrightBlack", name: "Dark gray", path: ["Console Colors"], fg: "--ansi-bright-black" },
+  { id: "ansiBrightRed", name: "Bright red", path: ["Console Colors"], fg: "--ansi-bright-red" },
+  { id: "ansiBrightGreen", name: "Bright green", path: ["Console Colors"], fg: "--ansi-bright-green" },
+  { id: "ansiBrightYellow", name: "Bright yellow", path: ["Console Colors"], fg: "--ansi-bright-yellow" },
+  { id: "ansiBrightBlue", name: "Bright blue", path: ["Console Colors"], fg: "--ansi-bright-blue" },
+  { id: "ansiBrightMagenta", name: "Bright magenta", path: ["Console Colors"], fg: "--ansi-bright-magenta" },
+  { id: "ansiBrightCyan", name: "Bright cyan", path: ["Console Colors"], fg: "--ansi-bright-cyan" },
+  { id: "ansiBrightWhite", name: "Bright white", path: ["Console Colors"], fg: "--ansi-bright-white" },
+
+  // Color Scheme › Git: inline blame segments and project view branch decorations.
+  // The inline blame widget and the project root suffix read these variables directly;
+  // only the blame segments render font style, so the branch decorations opt out.
+  {
+    id: "gitBlameAuthor",
+    name: "Editor inline blame › Author",
+    path: ["Git"],
+    fg: "--git-blame-author",
+    bg: "--git-blame-author-bg",
+    fontStyle: true,
+  },
+  {
+    id: "gitBlameDate",
+    name: "Editor inline blame › Date time",
+    path: ["Git"],
+    fg: "--git-blame-date",
+    bg: "--git-blame-date-bg",
+    fontStyle: true,
+  },
+  {
+    id: "gitBlameIssue",
+    name: "Editor inline blame › Issue link",
+    path: ["Git"],
+    fg: "--git-blame-issue",
+    bg: "--git-blame-issue-bg",
+    fontStyle: true,
+  },
+  {
+    id: "gitBlameSubject",
+    name: "Editor inline blame › Subject",
+    path: ["Git"],
+    fg: "--git-blame-subject",
+    bg: "--git-blame-subject-bg",
+    fontStyle: true,
+  },
+  {
+    id: "gitBranchChanged",
+    name: "Project View › Changed decoration",
+    path: ["Git"],
+    fg: "--git-branch-changed",
+    fontStyle: true,
+  },
+  {
+    id: "gitHeadTags",
+    name: "Project View › HEAD tags decoration",
+    path: ["Git"],
+    fg: "--git-head-tags",
+    fontStyle: true,
+  },
+  {
+    id: "gitLocalBranch",
+    name: "Project View › Local branch decoration",
+    path: ["Git"],
+    fg: "--git-local-branch",
+    fontStyle: true,
+  },
+  {
+    id: "gitMasterWithRemote",
+    name: "Project View › master/main with remote",
+    path: ["Git"],
+    fg: "--git-master-with-remote",
+    fontStyle: true,
+  },
+  {
+    id: "gitMasterWithoutRemote",
+    name: "Project View › master/main without remote",
+    path: ["Git"],
+    fg: "--git-master-without-remote",
+    fontStyle: true,
+  },
+  {
+    id: "gitTrackingBranch",
+    name: "Project View › Tracking branch decoration",
+    path: ["Git"],
+    fg: "--git-tracking-branch",
+    fontStyle: true,
+  },
+
+  syn("keyword", "Keyword", [LD], "keyword"),
+  syn("identifier", "Identifiers › Local variable", [LD], "variable"),
+  syn("parameter", "Identifiers › Parameter", [LD], "param"),
+  syn("globalVariable", "Identifiers › Global variable", [LD], "global"),
+  syn("packageReference", "Identifiers › Package reference", [LD], "namespace"),
+  syn("constant", "Identifiers › Constant", [LD], "constant", { defaultItalic: true }),
+  syn("field", "Identifiers › Instance field", [LD], "property"),
+  {
+    id: "staticSymbol",
+    name: "Identifiers › Static symbol",
+    path: [LD],
+    token: "static",
+    italicOnly: true,
+    defaultItalic: true,
+  },
+  syn("functionDeclaration", "Identifiers › Function declaration", [LD], "function"),
+  syn("functionCall", "Identifiers › Function call", [LD], "function-call"),
+  syn("predefined", "Identifiers › Predefined symbol", [LD], "builtin"),
+  syn("className", "Classes › Class name", [LD], "type"),
+  syn("number", "Number", [LD], "number"),
+  syn("string", "String › String text", [LD], "string"),
+  syn("escape", "String › Valid escape sequence", [LD], "escape"),
+  syn("lineComment", "Comments › Line comment", [LD], "comment"),
+  syn("docComment", "Comments › Doc comment › Text", [LD], "doc-comment", { defaultItalic: true }),
+  syn("docCommentTag", "Comments › Doc comment › Tag", [LD], "doc-comment-tag"),
+  syn("docCommentTagValue", "Comments › Doc comment › Tag value", [LD], "doc-comment-tag-value"),
+  { ...syn("docCommentMarkup", "Comments › Doc comment › Markup", [LD], "doc-markup"), bg: "--syn-doc-markup-bg" },
+  syn("metadata", "Metadata", [LD], "decorator"),
+  syn("operator", "Braces and Operators", [LD], "punct"),
+  syn("markupTag", "Markup › Tag", [LD], "tag"),
+  syn("markupAttribute", "Markup › Attribute", [LD], "attribute"),
+  ...[1, 2, 3, 4, 5].map((n) => syn(`semantic${n}`, `Semantic highlighting › Color ${n}`, [LD], `rainbow-${n}`)),
+  ...[1, 2, 3, 4, 5].map((n) => syn(`bracket${n}`, `Rainbow brackets › Level ${n}`, [LD], `bracket-${n}`)),
+
+  // Python's tree mirrors PyCharm's colour page (PythonColorsPage.java): every key the editor can
+  // restyle, in the page's order. Language-scoped like java.*: shared-token attributes reuse the
+  // Language Defaults token, so an override shadows it inside Python editors only and unset values
+  // keep falling back to the scheme default, as JetBrains' fallback keys do.
+  py("pyNumber", "Number", "number"),
+  py("pyKeyword", "Keyword", "keyword"),
+  py("pyLineComment", "Line comment", "comment"),
+  py("pyBytes", "String › Binary (bytes)", "python-bytes"),
+  py("pyString", "String › Text (unicode)", "string"),
+  py("pyValidEscape", "String › Escape sequence › Valid", "escape"),
+  py("pyInvalidEscape", "String › Escape sequence › Invalid", "invalid"),
+  py("pyFString", "String › f-string › Expression braces", "python-fstring"),
+  py("pyFormat", "String › f-string › Format spec number", "python-format"),
+  py("pyDocstring", "Docstring › Text", "docstring", { defaultItalic: true }),
+  py("pyDocstringTag", "Docstring › Tag", "python-docstring-tag"),
+  py("pyDocstringKeyword", "Docstring › Keyword", "python-docstring-keyword"),
+  py("pyOperationSign", "Braces and Operators › Operation sign", "punct"),
+  py("pyParentheses", "Braces and Operators › Parentheses", "python-parentheses"),
+  py("pyBrackets", "Braces and Operators › Brackets", "python-brackets"),
+  py("pyBraces", "Braces and Operators › Braces", "python-braces"),
+  py("pyFunctionDeclaration", "Functions › Function definition", "function"),
+  py("pyNestedFunction", "Functions › Nested function definition", "python-nested-function"),
+  py("pyFunctionCall", "Functions › Function call", "function-call"),
+  py("pyMethodCall", "Functions › Method call", "python-method-call"),
+  py("pyParameter", "Parameters › Parameter", "param"),
+  py("pySelf", "Parameters › 'self' parameter", "self"),
+  py("pyKeywordArg", "Keyword argument", "keyword-arg"),
+  py("pyPredefinedDefinition", "Special names › Definition", "python-predefined-definition"),
+  py("pyPredefinedUsage", "Special names › Usage", "python-predefined-usage"),
+  py("pyBuiltin", "Special names › Built-in name", "python-builtin"),
+  py("pyDecorator", "Special names › Decorator", "annotation"),
+  py("pyClassDefinition", "Classes › Class definition", "type"),
+  py("pyAnnotation", "Type annotation", "python-annotation"),
+  py("pyLocalVariable", "Identifiers › Local variables", "python-local-variable"),
+  py("pyTypeParameter", "Identifiers › Type parameters", "python-type-parameter"),
+  py("pyGlobalVariable", "Identifiers › Global variable", "python-global-variable"),
+  py("pyInstanceAttribute", "Identifiers › Instance attribute", "python-instance-attribute"),
+  py("pyClassAttribute", "Identifiers › Class attribute", "python-class-attribute"),
+  py("pyConstant", "Identifiers › Constant", "python-constant"),
+  py("pyProperty", "Identifiers › Property", "python-property"),
+  {
+    id: "pyStaticSymbol",
+    name: "Identifiers › Static symbol",
+    path: ["Python"],
+    language: "Python",
+    token: "python-static",
+    italicOnly: true,
+    defaultItalic: false,
+  },
+  syn("shellCommand", "Command", ["Shell Script"], "shell-command"),
+  syn("mdHeading", "Heading", ["Markdown"], "markup-heading", { defaultBold: true }),
+  syn("mdCode", "Code span", ["Markdown"], "markup-code"),
+  syn("mdLink", "Link", ["Markdown"], "link", { defaultEffect: "underline" }),
+  syn("regexp", "Regular expression", ["RegExp"], "regexp"),
+];
+
+const SCHEME_LANGUAGES = {
+  csharp: "C#",
+  go: "Go",
+  java: "Java",
+  julia: "Julia",
+  kotlin: "Kotlin",
+  php: "PHP",
+} as const;
+/** Languages that scope their overrides into a per-language editor block; Python ships its own attributes. */
+const SCHEME_LANGUAGE_SCOPES = { ...SCHEME_LANGUAGES, python: "Python" } as const;
+
+export const ATTRIBUTES: readonly AttributeDef[] = [
+  ...BASE_ATTRIBUTES,
+  ...Object.entries(SCHEME_LANGUAGES).flatMap(([id, language]) =>
+    BASE_ATTRIBUTES.filter((a) => a.path[0] === LD && !/^(semantic|bracket)\d$/.test(a.id)).map((a) => ({
+      ...a,
+      id: `${id}.${a.id}`,
+      path: [language, ...a.path.slice(1)],
+      language,
+    })),
+  ),
+  ...[
+    ["brackets", "Brackets", "bracket"],
+    ["separator", "Comma and semicolon", "separator"],
+    ["scriptTag", "PHP tags", "processing-instruction"],
+    ["staticField", "Static field", "static-property"],
+  ].map(([id, name, token]) => ({
+    ...syn(`php.${id}`, name!, ["PHP"], token!, id === "staticField" ? { defaultItalic: true } : {}),
+    language: "PHP",
+  })),
+];
+
+// --- scheme base values ------------------------------------------------------
+
+/** Variables a scheme sets: every attribute variable plus the editor tokens derived from them. */
+const SCHEME_VARS = new Set<string>([
+  ...ATTRIBUTES.flatMap((a) => [a.fg, a.bg, a.effect].filter((v): v is string => !!v)),
+  // Font style of token-less attributes (`overrideDeclarations` writes them for custom schemes too).
+  ...ATTRIBUTES.flatMap((a) => {
+    const base = a.fg ?? a.effect;
+    return !a.token && a.fontStyle && base ? [`${base}-bold`, `${base}-italic`, `${a.effect ?? base}-effect`] : [];
+  }),
+  "--syn-comment-style",
+  "--syn-doc-comment-tag-effect",
+  "--editor-error-decoration",
+  "--editor-warning-decoration",
+  "--editor-warning-background",
+  "--border-gutter",
+  "--border-indent-guide-active",
+  "--fg-fold-marker",
+  "--bg-editor-inline",
+  "--fg-completion-match",
+  "--fg-search-match",
+  "--matched-brace-weight",
+  "--bg-matched-tag",
+]);
+
+type Vars = Map<string, string>;
+
+/** Top-level `selector { decls }` blocks of a stylesheet (nested at-rules skipped). */
+function blocks(css: string): Array<{ selectors: string[]; decls: Vars }> {
+  const out: Array<{ selectors: string[]; decls: Vars }> = [];
+  const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  let depth = 0;
+  let start = 0;
+  let selector = "";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "{") {
+      if (depth === 0) {
+        selector = text.slice(start, i).trim();
+        start = i + 1;
+      }
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        if (!selector.startsWith("@")) {
+          const decls: Vars = new Map();
+          for (const m of text.slice(start, i).matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)) decls.set(m[1]!, m[2]!.trim());
+          out.push({ selectors: splitSelectors(selector), decls });
+        }
+        start = i + 1;
+      }
+    }
+  }
+  return out;
+}
+
+/** A selector list split at its top-level commas, not those inside `:not(…)`. */
+function splitSelectors(list: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < list.length; i++) {
+    const ch = list[i];
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    else if (ch === "," && depth === 0) {
+      out.push(list.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  out.push(list.slice(start).trim());
+  return out;
+}
+
+/** Whether a `[data-red-green]` rule of tokens.css applies to a window showing built-in scheme `id`. */
+function redGreenApplies(id: SchemeId, selector: string): boolean {
+  if (!selector.includes("[data-red-green]") || typeof document === "undefined") return false;
+  const root = document.implementation.createHTMLDocument("").documentElement;
+  root.dataset.theme = themeKind(id);
+  root.dataset.redGreen = "";
+  if (id === "dark-hc") root.dataset.contrast = "high";
+  else if (id !== "light" && id !== "dark") root.dataset.colorTheme = id;
+  try {
+    return root.matches(selector);
+  } catch {
+    return false;
+  }
+}
+
+function themeSelectors(id: SchemeId): string[] {
+  if (id === "light") return [':root[data-theme="light"]'];
+  if (id === "dark-hc") return [':root[data-theme="dark-hc"]', ':root[data-theme="dark"][data-contrast="high"]'];
+  if (id === "dark") return [':root[data-theme="dark"]'];
+  return [`:root[data-theme="${themeKind(id)}"]`, ":root[data-color-theme]", `:root[data-color-theme="${id}"]`];
+}
+
+let source: string = tokensCss;
+let parsed: ReturnType<typeof blocks> | null = null;
+const resolvedCache = new Map<string, Vars>();
+
+/** Replaces the token source (tests: CSS `?raw` imports are empty under vitest). */
+export function _setSchemeSource(css: string) {
+  source = css;
+  parsed = null;
+  resolvedCache.clear();
+}
+
+/**
+ * All tokens of a theme with `var()` references resolved (so they survive under another theme);
+ * with `redGreen`, as Adjust colors for red-green vision deficiency recolours it.
+ */
+export function schemeTokens(id: SchemeId, css: string = source, redGreen = false): Vars {
+  const key = redGreen ? `${id}+red-green` : id;
+  const cached = css === source ? resolvedCache.get(key) : undefined;
+  if (cached) return cached;
+  const all = css === source ? (parsed ??= blocks(css)) : blocks(css);
+  const own = themeSelectors(id);
+  const merged: Vars = new Map();
+  for (const b of all) if (b.selectors.includes(":root")) for (const [k, v] of b.decls) merged.set(k, v);
+  for (const b of all) if (b.selectors.some((s) => own.includes(s))) for (const [k, v] of b.decls) merged.set(k, v);
+  if (redGreen)
+    for (const b of all)
+      if (b.selectors.some((s) => redGreenApplies(id, s))) for (const [k, v] of b.decls) merged.set(k, v);
+  const resolve = (value: string, depth = 0): string =>
+    depth > 8
+      ? value
+      : value.replace(
+          /var\((--[\w-]+)(?:\s*,\s*([^()]*(?:\([^()]*\))?[^()]*))?\)/g,
+          (_m, name: string, fallback?: string) => {
+            const v = merged.get(name);
+            return v !== undefined
+              ? resolve(v, depth + 1)
+              : fallback !== undefined
+                ? resolve(fallback.trim(), depth + 1)
+                : `var(${name})`;
+          },
+        );
+  const out: Vars = new Map();
+  for (const [k, v] of merged) out.set(k, resolve(v));
+  if (css === source) resolvedCache.set(key, out);
+  return out;
+}
+
+/** The scheme the editor shows for `setting` under the current theme. */
+export function effectiveScheme(
+  setting: string | undefined,
+  root: HTMLElement | null = typeof document !== "undefined" ? document.documentElement : null,
+  customs: CustomColorSchemes = {},
+): string {
+  if (isBuiltinTheme(setting) || (setting && Object.hasOwn(customs, setting))) return setting;
+  return themeScheme(root);
+}
+
+/** Light or dark: a built-in scheme's theme kind, a custom scheme's parent (null: unknown). */
+export function schemeKind(id: string | undefined, customs: CustomColorSchemes = {}): "light" | "dark" | null {
+  if (isBuiltinTheme(id)) return themeKind(id);
+  return (id && customSchemes(customs)[id]?.parent) || null;
+}
+
+/**
+ * The scheme setting once the IDE theme has turned `kind`, or null to keep it: a chosen scheme
+ * of the other kind gives way to the theme's own, so a light theme doesn't keep a dark editor.
+ */
+export function schemeAfterThemeChange(
+  setting: string | undefined,
+  kind: "light" | "dark",
+  customs: CustomColorSchemes = {},
+): string | null {
+  const current = schemeKind(setting, customs);
+  return current && current !== kind ? "theme-default" : null;
+}
+
+/** Scheme belonging to the active IDE theme (`data-theme` / `data-contrast`). */
+export function themeScheme(
+  root: HTMLElement | null = typeof document !== "undefined" ? document.documentElement : null,
+): SchemeId {
+  if (!root) return "light";
+  if (isBuiltinTheme(root.dataset.colorTheme)) return root.dataset.colorTheme;
+  if (root.dataset.theme === "light") return "light";
+  return root.dataset.contrast === "high" || root.dataset.theme === "dark-hc" ? "dark-hc" : "dark";
+}
+
+/** An explicit Bold / regular attribute: the editor's configured bold or main weight. */
+export function boldWeight(bold: boolean): string {
+  return bold ? "var(--fw-code-bold, 700)" : "var(--fw-code, 400)";
+}
+
+export const EFFECT_CSS: Record<string, (c: string) => string> = {
+  underline: (c) => `underline ${c}`,
+  wave: (c) => `underline wavy ${c}`,
+  strikeout: (c) => `line-through ${c}`,
+  none: () => "none",
+};
+
+/** Explicitly removes a scheme colour; unlike an unset field, this must survive as an override. */
+export const CLEAR_COLOR = "transparent";
+
+const setOrCleared = (value: string | undefined) => isHexColor(value) || value === CLEAR_COLOR;
+
+/** Declarations for the overrides of one scheme. */
+export function overrideDeclarations(
+  overrides: Record<string, TextAttributesOverride> | undefined,
+  language?: string,
+): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  if (!overrides) return out;
+  for (const attr of ATTRIBUTES) {
+    if (attr.language !== language) continue;
+    const o = overrides[attr.id];
+    if (!o) continue;
+    if (setOrCleared(o.foreground) && attr.fg) {
+      // No foreground means the default text colour, not invisible text.
+      const cleared = attr.fgOverlay ? "inherit" : attr.id === "text" ? CLEAR_COLOR : "var(--fg-editor)";
+      const fg = o.foreground === CLEAR_COLOR ? cleared : o.foreground!;
+      out.push([attr.fg, fg]);
+      // Terminal prefers `--terminal-ansi-*`; keep it in sync with console `--ansi-*`.
+      if (attr.fg.startsWith("--ansi-")) out.push([`--terminal-ansi-${attr.fg.slice("--ansi-".length)}`, fg]);
+    }
+    if (setOrCleared(o.background) && attr.bg) out.push([attr.bg, o.background]);
+    if (setOrCleared(o.effectColor) && attr.effect) out.push([attr.effect, o.effectColor]);
+    if (attr.effect && (setOrCleared(o.effectColor) || o.effect)) {
+      const style = o.effect ?? attr.defaultEffect ?? "wave";
+      const color = setOrCleared(o.effectColor) ? o.effectColor! : `var(${attr.effect})`;
+      const decoration = EFFECT_CSS[style]?.(color) ?? "none";
+      if (attr.id === "error") out.push(["--editor-error-decoration", decoration]);
+      if (attr.id === "warning") out.push(["--editor-warning-decoration", decoration]);
+    }
+    if (attr.token) {
+      const t = attr.token;
+      if (o.bold !== undefined) out.push([`--syn-${t}-bold`, boldWeight(o.bold)]);
+      if (o.italic !== undefined) {
+        out.push([`--syn-${t}-italic`, o.italic ? "italic" : "normal"]);
+        if (t === "comment") out.push(["--syn-comment-style", o.italic ? "italic" : "normal"]);
+      }
+      if (setOrCleared(o.background)) out.push([`--syn-${t}-bg`, o.background]);
+      if (o.effect)
+        out.push([
+          `--syn-${t}-effect`,
+          EFFECT_CSS[o.effect]?.(setOrCleared(o.effectColor) ? o.effectColor! : "currentColor") ?? "none",
+        ]);
+    } else if (attr.fontStyle) {
+      // Token-less attributes whose renderer applies font style (the Git blame segments)
+      // carry it on `--<fg>-*`, mirroring the token scheme's `--syn-<token>-*` family.
+      const base = attr.fg ?? attr.effect;
+      if (base) {
+        if (o.bold !== undefined) out.push([`${base}-bold`, boldWeight(o.bold)]);
+        if (o.italic !== undefined) out.push([`${base}-italic`, o.italic ? "italic" : "normal"]);
+        if (o.effect)
+          out.push([
+            `${attr.effect ?? base}-effect`,
+            EFFECT_CSS[o.effect]?.(
+              setOrCleared(o.effectColor) ? o.effectColor! : attr.effect ? `var(${attr.effect})` : "currentColor",
+            ) ?? "none",
+          ]);
+      }
+    }
+  }
+  return out;
+}
+
+export const isHexColor = (value: unknown): value is string =>
+  typeof value === "string" && /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(value);
+
+/** Validate persisted imports too: settings files are user editable. */
+export function customSchemes(raw: unknown): CustomColorSchemes {
+  const out: CustomColorSchemes = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [id, value] of Object.entries(raw)) {
+    if (!/^custom-[\w-]+$/.test(id) || !value || typeof value !== "object") continue;
+    const v = value as Record<string, unknown>;
+    if (typeof v.name !== "string" || !v.name.trim() || (v.parent !== "light" && v.parent !== "dark")) continue;
+    const attributes: Record<string, TextAttributesOverride> = {};
+    if (v.attributes && typeof v.attributes === "object") {
+      for (const attr of ATTRIBUTES) {
+        const a = (v.attributes as Record<string, TextAttributesOverride>)[attr.id];
+        if (!a || typeof a !== "object") continue;
+        const safe: TextAttributesOverride = {};
+        for (const key of ["foreground", "background", "effectColor"] as const)
+          if (isHexColor(a[key])) safe[key] = a[key];
+        for (const key of ["bold", "italic"] as const) if (typeof a[key] === "boolean") safe[key] = a[key];
+        if (a.effect && Object.hasOwn(EFFECT_CSS, a.effect)) safe.effect = a.effect;
+        attributes[attr.id] = safe;
+      }
+    }
+    out[id] = { name: v.name, parent: v.parent, attributes };
+  }
+  return out;
+}
+
+export function listSchemes(customs: CustomColorSchemes = {}) {
+  return [...SCHEMES, ...Object.entries(customSchemes(customs)).map(([id, s]) => ({ id, name: s.name }))];
+}
+
+/** With `redGreen`, a built-in scheme's red-green variant; a custom scheme keeps its parent's own colours. */
+export function resolvedSchemeTokens(id: string, customs: CustomColorSchemes = {}, redGreen = false): Vars {
+  const custom = customSchemes(customs)[id];
+  const builtin = isBuiltinTheme(id);
+  const base = builtin ? id : (custom?.parent ?? "light");
+  const tokens = new Map(schemeTokens(base, source, redGreen && builtin));
+  for (const [key, value] of overrideDeclarations(custom?.attributes)) tokens.set(key, value);
+  return tokens;
+}
+
+const hexIn = (value: string | undefined): string | undefined =>
+  value?.match(/#(?:[0-9a-f]{3}|[0-9a-f]{6})\b/i)?.[0]?.toLowerCase();
+
+const effectFromCss = (value: string | undefined): TextAttributesOverride["effect"] => {
+  if (!value) return undefined;
+  if (/line-through/i.test(value)) return "strikeout";
+  if (/wavy/i.test(value)) return "wave";
+  if (/underline/i.test(value)) return "underline";
+  if (/none/i.test(value)) return "none";
+  return undefined;
+};
+
+const boldFromCss = (value: string | undefined): boolean | undefined => {
+  if (!value) return undefined;
+  if (/bold|[6-9]00/i.test(value)) return true;
+  if (/normal|[1-5]00/i.test(value)) return false;
+  return undefined;
+};
+
+const italicFromCss = (value: string | undefined): boolean | undefined => {
+  if (!value) return undefined;
+  if (/italic|oblique/i.test(value)) return true;
+  if (/normal/i.test(value)) return false;
+  return undefined;
+};
+
+/**
+ * The attributes an editor shows for a scheme before user overrides: imported
+ * values where the scheme sets them, otherwise the theme token and the editor's
+ * built-in defaults.
+ */
+export function resolvedAttribute(
+  id: string,
+  attrId: string,
+  customs: CustomColorSchemes = {},
+  redGreen = false,
+): TextAttributesOverride {
+  const attr = ATTRIBUTES.find((a) => a.id === attrId);
+  if (!attr) return {};
+  const custom = customSchemes(customs)[id];
+  const own = custom?.attributes[attr.id];
+  const vars = resolvedSchemeTokens(id, customs, redGreen);
+  if (attr.language)
+    for (const [key, value] of overrideDeclarations(custom?.attributes, attr.language)) vars.set(key, value);
+
+  const token = attr.token;
+  const foreground = attr.fg ? vars.get(attr.fg) : undefined;
+  const background = attr.bg ? vars.get(attr.bg) : token ? vars.get(`--syn-${token}-bg`) : undefined;
+  const effectCss = attr.effect ? vars.get(attr.effect) : token ? vars.get(`--syn-${token}-effect`) : undefined;
+  const effect = own?.effect ?? effectFromCss(effectCss) ?? attr.defaultEffect;
+  const out: TextAttributesOverride = {};
+  if (isHexColor(foreground)) out.foreground = foreground.toLowerCase();
+  if (isHexColor(background)) out.background = background.toLowerCase();
+  if (own?.effectColor && isHexColor(own.effectColor)) out.effectColor = own.effectColor.toLowerCase();
+  else {
+    const effectColor = hexIn(effectCss);
+    if (effectColor) out.effectColor = effectColor;
+  }
+  if (token) {
+    if (!attr.italicOnly)
+      out.bold = own?.bold ?? boldFromCss(vars.get(`--syn-${token}-bold`)) ?? attr.defaultBold ?? false;
+    const italicCss =
+      vars.get(`--syn-${token}-italic`) ?? (token === "comment" ? vars.get("--syn-comment-style") : undefined);
+    out.italic = own?.italic ?? italicFromCss(italicCss) ?? attr.defaultItalic ?? false;
+    if (effect) out.effect = effect;
+  } else {
+    // Token-less attributes whose renderer applies font style (the Git segments, Errors and
+    // Warnings) carry their overrides on `--<fg|effect>-*`, the same declarations
+    // `overrideDeclarations` emits.
+    if (attr.fontStyle) {
+      const base = attr.fg ?? attr.effect;
+      const bold = base ? vars.get(`${base}-bold`) : undefined;
+      const italic = base ? vars.get(`${base}-italic`) : undefined;
+      out.bold = boldFromCss(bold) ?? attr.defaultBold ?? false;
+      out.italic = italicFromCss(italic) ?? attr.defaultItalic ?? false;
+    }
+    if (effect) out.effect = effect;
+  }
+  return out;
+}
+
+const SAFE = /^[^;{}<>]*$/;
+
+/** Stylesheet text for the chosen scheme and its overrides ("" when the theme's own is used unchanged). */
+export function schemeCss(
+  setting: string | undefined,
+  overrides: Record<string, Record<string, TextAttributesOverride>> | undefined,
+  root?: HTMLElement | null,
+  customs: CustomColorSchemes = {},
+): string {
+  const valid = customSchemes(customs);
+  const id = effectiveScheme(setting, root, valid);
+  const decls: Array<[string, string]> = [];
+  // A plugin theme brings its own editor colours: an explicit scheme replaces them even on the same base.
+  const el = root === undefined ? (typeof document !== "undefined" ? document.documentElement : null) : root;
+  const pluginTheme = !!el?.dataset.pluginTheme && id === setting;
+  if (id !== themeScheme(root) || pluginTheme) {
+    const tokens = resolvedSchemeTokens(id, valid, !!el?.hasAttribute("data-red-green"));
+    for (const [k, v] of tokens)
+      if (SCHEME_VARS.has(k) || k.startsWith("--syn-")) {
+        decls.push([k, v]);
+        // Terminal reads `--terminal-ansi-*`; keep it aligned with console `--ansi-*`.
+        if (k.startsWith("--ansi-")) decls.push([`--terminal-ansi-${k.slice("--ansi-".length)}`, v]);
+      }
+    // The editor surface follows the scheme, not the island colour of the UI theme.
+    const bg = tokens.get("--bg-editor") ?? tokens.get("--bg-island");
+    // An imported scheme's gutter keeps its editor background unless it sets one of its own.
+    const custom = valid[id];
+    const gutter = custom ? (custom.attributes.gutter?.background ?? bg) : (tokens.get("--bg-editor-gutter") ?? bg);
+    if (bg) decls.push(["--bg-editor", bg], ["--bg-editor-gutter", gutter ?? bg]);
+  }
+  decls.push(...overrideDeclarations(overrides?.[id]));
+  const body = decls
+    .filter(([k, v]) => /^--[\w-]+$/.test(k) && SAFE.test(v))
+    .map(([k, v]) => `  ${k}: ${v} !important;`);
+  let css = body.length ? `:root {\n${body.join("\n")}\n}\n` : "";
+  for (const language of Object.values(SCHEME_LANGUAGE_SCOPES)) {
+    const languageBody = [
+      ...overrideDeclarations(valid[id]?.attributes, language),
+      ...overrideDeclarations(overrides?.[id], language),
+    ]
+      .filter(([k, v]) => /^--[\w-]+$/.test(k) && SAFE.test(v))
+      .map(([k, v]) => `  ${k}: ${v} !important;`);
+    // The editor of that language, and a block of it in another editor (a Markdown code fence).
+    if (languageBody.length)
+      css += `.cm-editor[data-language="${language}"], .cm-editor [data-language="${language}"] {\n${languageBody.join("\n")}\n}\n`;
+  }
+  return css;
+}

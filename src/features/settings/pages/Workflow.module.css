@@ -1,0 +1,352 @@
+.indented {
+  display: flex;
+  flex-direction: column;
+  padding-left: 20px;
+}
+.matched {
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+}
+.disabled {
+  color: var(--fg-subtle);
+}
+
+/* Two-column checkbox grid. */
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 24px;
+}
+.column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* "[x] Limit history to: [1000] rows" */
+.fontFamily {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.inlineRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 28px;
+  padding: 2px 6px;
+  margin: 0 -6px;
+  border-radius: var(--radius-row);
+}
+.unit {
+  color: var(--fg);
+}
+.inlineHint {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+
+.radios {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+}
+.radio {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+.radio input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+.link:hover {
+  text-decoration: underline;
+}
+
+.note {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  line-height: 1.4;
+}
+.ok {
+  color: var(--success, var(--fg-muted));
+}
+.error {
+  color: var(--danger);
+}
+
+.wide {
+  width: 360px;
+}
+.medium {
+  width: 220px;
+}
+.small {
+  width: 64px;
+}
+
+/* Editable tables / lists. */
+.tableBox {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 4px);
+  overflow: hidden;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-0-5);
+  padding: 2px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.table th {
+  text-align: left;
+  font-weight: normal;
+  color: var(--fg-muted);
+  height: var(--h-list-row);
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+.table td {
+  height: var(--h-list-row);
+  padding: 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.table tbody tr:hover {
+  background: var(--bg-tree-hover);
+}
+.table tbody tr.selectedRow {
+  background: var(--bg-tree-selected);
+}
+.saveActions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  font-size: var(--fs-ui);
+}
+.saveActionsTable th {
+  background: var(--bg-control);
+}
+.saveActionsTable td {
+  height: auto;
+  padding-block: var(--space-1);
+  vertical-align: top;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.saveActivationColumn {
+  width: 168px;
+}
+@container settings-content (width < 560px) {
+  .saveActivationColumn {
+    width: 120px;
+  }
+}
+.saveActivation {
+  padding-block-start: var(--space-0-5);
+  color: var(--fg-muted);
+}
+.mappingsTable {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  font-size: var(--fs-ui);
+}
+.mappingsTable > .toolbar {
+  flex: none;
+}
+.mappingRows {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  scroll-padding-top: var(--h-list-row);
+}
+.mappingRows th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-control);
+  border-bottom: 0;
+  box-shadow: inset 0 -1px var(--border);
+}
+.mappingVcsColumn {
+  width: 112px;
+}
+.mappingRows .mappingSelect {
+  width: 100%;
+  padding-inline-start: 0;
+}
+.mappingDirectory {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+.mappingPath {
+  display: flex;
+  min-width: 0;
+}
+.mappingParent,
+.mappingName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mappingParent {
+  min-width: 0;
+  color: var(--fg-subtle);
+}
+.mappingName {
+  flex: none;
+  max-width: 100%;
+}
+.mono {
+  font-family: var(--font-mono);
+}
+.cellInput {
+  width: 100%;
+}
+.empty {
+  color: var(--fg-subtle);
+  text-align: center;
+}
+
+/* External Tools: list + editor. */
+.toolsLayout {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.toolList {
+  min-height: 120px;
+  max-height: 220px;
+  overflow: auto;
+}
+.toolRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--h-list-row);
+  padding: 0 8px;
+  cursor: default;
+}
+.toolRow > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toolName {
+  flex: 1;
+}
+.toolRow.empty {
+  height: auto;
+  min-height: var(--h-list-row);
+  padding-block: 4px;
+  overflow-wrap: anywhere;
+}
+.toolRow:hover {
+  background: var(--bg-tree-hover);
+}
+.toolRowSelected,
+.toolRowSelected:hover {
+  background: var(--bg-tree-selected);
+}
+.toolGroup {
+  max-width: 45%;
+  color: var(--fg-subtle);
+  margin-left: auto;
+}
+.macroField {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+.macroList {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+  max-height: 320px;
+  overflow: auto;
+}
+.macroItem {
+  display: flex;
+  gap: var(--space-3);
+  padding: 3px 12px;
+  border: none;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+}
+.macroItem:hover {
+  background: var(--bg-list-selected);
+}
+.macroName {
+  font-family: var(--font-mono);
+  min-width: 200px;
+}
+.macroDesc {
+  color: var(--fg-subtle);
+}
+.mappingIcon {
+  flex: none;
+}
+/* The aligned rows of a section share one label column, as wide as its widest label. */
+.toolsLayout *:has(> .alignedRow) {
+  display: grid;
+  grid-template-columns: minmax(130px, max-content) minmax(0, 1fr);
+  column-gap: var(--space-2);
+  align-content: start;
+}
+.toolsLayout *:has(> .alignedRow) > * {
+  grid-column: 1 / -1;
+}
+.toolsLayout .alignedRow {
+  grid-template-columns: subgrid;
+}
+
+/* Multi-line setting (agent instructions): a text field frame, full width. */
+.instructions {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 72px;
+  padding: var(--space-1-5) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-control, 4px);
+  background: var(--bg-field, var(--bg-button));
+  box-shadow: inset 0 0 0 1px var(--border-button);
+  color: var(--fg-strong);
+  font: inherit;
+  font-size: var(--fs-ui);
+  resize: vertical;
+  outline: none;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.instructions::placeholder {
+  color: var(--fg-faint);
+}
+.instructions:focus {
+  box-shadow:
+    inset 0 0 0 1px var(--focus-ring),
+    0 0 0 1px var(--focus-ring);
+}

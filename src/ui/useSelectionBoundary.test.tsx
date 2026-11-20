@@ -1,0 +1,147 @@
+import { useRef } from "react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
+import { afterEach, expect, it } from "vitest";
+import { selectReadingPane, useSelectionBoundary } from "./useSelectionBoundary";
+
+afterEach(() => {
+  window.getSelection()?.removeAllRanges();
+  cleanup();
+});
+
+function Pane() {
+  const ref = useRef<HTMLDivElement>(null);
+  useSelectionBoundary(ref);
+  return (
+    <div ref={ref}>
+      <p>First message</p>
+      <p>Last message</p>
+      <div style={{ userSelect: "none" }}>
+        <span>11:35 AM</span>
+      </div>
+    </div>
+  );
+}
+
+function fixture() {
+  const view = render(
+    <>
+      <div>Header</div>
+      <Pane />
+      <div>Reply to the agent</div>
+      <div>Branch or tag</div>
+    </>,
+  );
+  const text = (value: string) => view.getByText(value).firstChild!;
+  const select = (anchor: Node, start: number, focus: Node, end: number) => {
+    const selection = window.getSelection()!;
+    selection.setBaseAndExtent(anchor, start, focus, end);
+    document.dispatchEvent(new Event("selectionchange"));
+    return selection;
+  };
+  return { ...view, text, select };
+}
+
+it("clamps a downward selection before the composer and Git panel", () => {
+  const { text, select } = fixture();
+  const selection = select(text("Last message"), 5, text("Branch or tag"), 13);
+  expect(selection.toString()).toBe("message");
+  expect(selection.anchorNode).toBe(text("Last message"));
+  expect(selection.anchorOffset).toBe(5);
+});
+
+it("ends a clamped selection in the last selectable text, not on the pane's edge", () => {
+  // WebKit paints a selection ending on the pane's edge into the next text field after it.
+  const { text, select } = fixture();
+  const selection = select(text("Last message"), 0, text("Reply to the agent"), 0);
+  expect(selection.focusNode).toBe(text("Last message"));
+  expect(selection.focusOffset).toBe("Last message".length);
+});
+
+it("clamps an upward selection while retaining its direction", () => {
+  const { text, select } = fixture();
+  const selection = select(text("First message"), 5, text("Header"), 0);
+  expect(selection.toString()).toBe("First");
+  expect(selection.anchorNode).toBe(text("First message"));
+  expect(selection.anchorOffset).toBe(5);
+});
+
+it("preserves cross-message selection and lets the endpoint return inside", () => {
+  const { text, select } = fixture();
+  select(text("First message"), 6, text("Branch or tag"), 13);
+  const selection = select(text("First message"), 6, text("Last message"), 4);
+  expect(selection.toString()).toBe("messageLast");
+  expect(selection.focusNode).toBe(text("Last message"));
+});
+
+it("clamps a selection dragged up from another pane into the conversation", () => {
+  const { text, select } = fixture();
+  const selection = select(text("Branch or tag"), 6, text("Last message"), 4);
+  expect(selection.toString()).toBe(" message");
+  expect(selection.focusNode).toBe(text("Last message"));
+});
+
+it("leaves selections that do not touch the conversation alone", () => {
+  const { text, select } = fixture();
+  const selection = select(text("Reply to the agent"), 0, text("Branch or tag"), 13);
+  expect(selection.toString()).toBe("Reply to the agentBranch or tag");
+});
+
+it("removes the boundary listener when the pane unmounts", () => {
+  const { text, select, unmount } = fixture();
+  const first = text("First message");
+  const last = text("Branch or tag");
+  const container = first.parentElement!.parentElement!.parentElement!;
+  const children = [...container.childNodes];
+  unmount();
+  container.append(...children);
+  document.body.append(container);
+  expect(select(first, 0, last, 13).toString()).toContain("Branch or tag");
+  container.remove();
+});
+
+function FocusablePane() {
+  const ref = useRef<HTMLDivElement>(null);
+  useSelectionBoundary(ref);
+  return (
+    <div ref={ref} tabIndex={0} data-testid="pane">
+      <p>GET /data.json</p>
+      <input aria-label="Filter" defaultValue="query" />
+    </div>
+  );
+}
+
+it("selects only the pane's text on primary+A", () => {
+  const view = render(
+    <>
+      <div>Request history</div>
+      <FocusablePane />
+    </>,
+  );
+  const pane = view.getByTestId("pane");
+  const event = fireEvent.keyDown(pane, { key: "a", ctrlKey: true, metaKey: true });
+  expect(event).toBe(false);
+  const range = window.getSelection()!.getRangeAt(0);
+  expect(range.startContainer).toBe(view.getByText("GET /data.json").firstChild);
+  expect(range.startOffset).toBe(0);
+  expect(range.endContainer).toBe(view.getByText("GET /data.json").firstChild);
+  expect(range.endOffset).toBe("GET /data.json".length);
+  expect(window.getSelection()!.toString()).not.toContain("Request history");
+});
+
+it("leaves Select All in an editable field to the field", () => {
+  const view = render(<FocusablePane />);
+  const input = view.getByLabelText("Filter");
+  expect(fireEvent.keyDown(input, { key: "a", ctrlKey: true, metaKey: true })).toBe(true);
+  expect(selectReadingPane(input)).toBe(false);
+  expect(selectReadingPane(document.body)).toBe(false);
+});
+
+it("ends Select All in the pane's last selectable text, not on its edge before the composer", () => {
+  const view = fixture();
+  expect(selectReadingPane(view.getByText("First message"))).toBe(true);
+  const range = window.getSelection()!.getRangeAt(0);
+  expect(range.startContainer).toBe(view.text("First message"));
+  expect(range.endContainer).toBe(view.text("Last message"));
+  expect(range.endOffset).toBe("Last message".length);
+  expect(window.getSelection()!.toString()).not.toContain("Reply to the agent");
+});

@@ -1,0 +1,999 @@
+/**
+ * One DocModel per open backend document (shared by every tab / split
+ * showing the file) and the manager that opens, saves and closes them.
+ */
+import { ChangeSet, Transaction, type Annotation, type EditorState, type StateEffect } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import type { LanguageDescription, LanguageSupport } from "@codemirror/language";
+import { create } from "zustand";
+import type { EditorConfigProps } from "@/bindings";
+import type {
+  DocId,
+  DocumentInfo,
+  EditorSettings,
+  FileSettings,
+  LineEnding,
+  OutlineItem,
+  Settings,
+  SyntaxHighlights,
+} from "@/platform/ipc";
+import {
+  _emitEditorEvent,
+  _saveParticipants,
+  isLibraryPath,
+  mirroredChange,
+  remoteChange,
+  useEditorRegistry,
+  type EditorDocContext,
+} from "@/editor/api";
+import { isUntitledUri, isVirtualUri } from "@/platform/virtualDocs";
+import { DocSync, type Scheduler, frameScheduler } from "../sync/DocSync";
+import type { DocBackend, DocDirtyEvent, LanguageInfo } from "../backend";
+import {
+  findLanguageDescription,
+  languageInfo,
+  loadLanguageInfos,
+  loadSupport,
+  loadedSupport,
+  commentTokens,
+  uiModeForPath,
+} from "../cm/languages";
+import { foldEffect } from "@codemirror/language";
+import { backendFolds, setBackendFolds } from "../cm/folding";
+import { setSyntaxHighlights } from "../cm/syntaxHighlight";
+import {
+  caretFor,
+  compartments,
+  detectIndent,
+  distractionFreeExtension,
+  effectiveIndent,
+  foldingFor,
+  fontExtension,
+  heavyExtension,
+  indentExtension,
+  lineNumbersExtension,
+  prefsFor,
+  prefsOf,
+  readOnlyExtension,
+  stickyExtension,
+  wrapExtension,
+  HEAVY_LIMIT,
+} from "../cm/setup";
+import { setMethodLines, softWrapActive } from "../cm/prefs";
+import type { EditorSlot } from "./slot";
+import { tx } from "@/platform/i18n";
+import { logError } from "@/platform/errorLog";
+import { WorkspaceHistory } from "./workspaceHistory";
+
+/**
+ * Whether a comment fold is the file header (as opposed to a documentation
+ * comment). Both conditions must hold: the fold sits at the top of the file
+ * (its first line is at or before the first code line) and that line starts
+ * with a comment token. Otherwise ordinary documentation comments further down
+ * would follow the file-header toggle. A Python module docstring opens with
+ * quotes, so it is documentation even though it is the first thing in the file.
+ *
+ * Line numbers are 1-based; `firstCodeLine` is 0 when the file has no code line
+ * (only blanks / shebang), in which case nothing is a header.
+ */
+export function isFileHeaderFold(
+  foldLine: number,
+  firstCodeLine: number,
+  line: string,
+  lineComment: string | null | undefined,
+  blockComment: readonly [string, string] | null | undefined,
+): boolean {
+  if (firstCodeLine === 0 || foldLine > firstCodeLine) return false;
+  const text = line.trimStart();
+  if (lineComment && text.startsWith(lineComment)) return true;
+  if (blockComment && text.startsWith(blockComment[0])) return true;
+  return false;
+}
+
+export type Banner = "binary" | "tooLarge" | "readOnly" | "library" | null;
+
+/** A view attached to a document outside the tab system (see `attachment.ts`). */
+export interface DocAttachmentTarget {
+  /** Applies changes that are already in the model (another view / the backend). */
+  applyExternal(changes: ChangeSet, annotations: Annotation<unknown>[]): void;
+  /** Secondary views that share the text tab's undo history hand it over as tabs open/close. */
+  historyState?(): EditorState | null;
+  adoptHistory?(state: EditorState): void;
+}
+
+export interface DocMeta {
+  doc: DocId;
+  path: string;
+  language: string;
+  uiMode: string | null;
+  encoding: string;
+  hasBom: boolean;
+  lineEnding: LineEnding;
+  readOnly: boolean;
+  dirty: boolean;
+  /** "Reload with Encoding" can re-decode this document's source bytes. */
+  canReloadEncoding: boolean;
+  banner: Banner;
+  indent: { tabSize: number; insertSpaces: boolean };
+}
+
+/** Reactive per-path document metadata (tabs, status bar, banners). */
+export const useDocMeta = create<Record<string, DocMeta>>(() => ({}));
+/** Outline per path for breadcrumbs (refreshed after edits settle). */
+export const useOutline = create<Record<string, OutlineItem[]>>(() => ({}));
+
+const REFRESH_DELAY = 450;
+/**
+ * Languages whose stream mode works from word lists, so the grammar's highlights are drawn
+ * over it: Kotlin declaration roles, Shell commands, function names and `local`.
+ */
+const GRAMMAR_SUPPLEMENTED = new Set(["kotlin", "shellscript"]);
+function bannerFor(info: DocumentInfo): Banner {
+  // Virtual documents (library classes) get their own notice from the editor area.
+  if (info.uri) return null;
+  if (isLibraryPath(info.path)) return "library";
+  if (!info.readOnly) return null;
+  if (!info.text.length) return "binary";
+  // The backend makes files above its size limit read-only and flags them `large`.
+  if (info.large) return "tooLarge";
+  return "readOnly";
+}
+
+/** Ranges touched since the last save (in current-document coordinates). */
+export class ModifiedRanges {
+  ranges: Array<[number, number]> = [];
+  all = false;
+
+  map(changes: ChangeSet) {
+    if (this.all) return;
+    this.ranges = this.ranges.map(([a, b]): [number, number] => [changes.mapPos(a, -1), changes.mapPos(b, 1)]);
+  }
+
+  add(changes: ChangeSet) {
+    if (this.all) return;
+    this.map(changes);
+    changes.iterChangedRanges((_fa, _ta, fromB, toB) => this.ranges.push([fromB, toB]), true);
+    if (this.ranges.length > 2000) {
+      this.ranges.sort((x, y) => x[0] - y[0]);
+      const merged: Array<[number, number]> = [];
+      for (const r of this.ranges) {
+        const last = merged[merged.length - 1];
+        if (last && r[0] <= last[1] + 1) last[1] = Math.max(last[1], r[1]);
+        else merged.push([r[0], r[1]]);
+      }
+      this.ranges = merged;
+      if (merged.length > 2000) this.all = true;
+    }
+  }
+
+  clear() {
+    this.ranges = [];
+    this.all = false;
+  }
+}
+
+/** 0-based start lines of functions / methods in an outline (method separators). */
+export function methodLines(items: readonly OutlineItem[]): number[] {
+  const out: number[] = [];
+  const walk = (list: readonly OutlineItem[]) => {
+    for (const it of list) {
+      if (it.kind === "function" || it.kind === "method" || it.kind === "constructor") out.push(it.range.start.line);
+      walk(it.children);
+    }
+  };
+  walk(items);
+  return out.sort((a, b) => a - b);
+}
+
+/**
+ * Save cleanup: trailing whitespace on touched (or all) lines except caret
+ * lines, trailing blank lines at the end, and the final newline.
+ */
+export function saveCleanupChanges(
+  state: EditorState,
+  modified: ModifiedRanges,
+  opts: {
+    trim: boolean;
+    finalNewline: boolean;
+    protectLines: Set<number>;
+    allLines?: boolean;
+    trailingBlankLines?: boolean;
+  },
+): Array<{ from: number; to: number; insert?: string }> {
+  const changes: Array<{ from: number; to: number; insert?: string }> = [];
+  const doc = state.doc;
+  let blankFrom = doc.length;
+  if (opts.trailingBlankLines) {
+    // Keep exactly one line break after the last non-blank line.
+    const m = /\n[ \t\n]*$/.exec(doc.sliceString(Math.max(0, doc.length - 10_000)));
+    if (m && m[0].indexOf("\n", 1) >= 0) blankFrom = doc.length - m[0].length + 1;
+  }
+  if (opts.trim) {
+    const lines = new Set<number>();
+    if (modified.all || opts.allLines) for (let n = 1; n <= doc.lines; n++) lines.add(n);
+    else
+      for (const [a, b] of modified.ranges) {
+        const from = doc.lineAt(Math.min(a, doc.length)).number;
+        const to = doc.lineAt(Math.min(b, doc.length)).number;
+        for (let n = from; n <= to; n++) lines.add(n);
+      }
+    for (const n of [...lines].sort((x, y) => x - y)) {
+      if (opts.protectLines.has(n)) continue;
+      const line = doc.line(n);
+      if (line.from >= blankFrom) break;
+      const m = /[ \t]+$/.exec(line.text);
+      if (m) changes.push({ from: line.from + m.index, to: line.to });
+    }
+  }
+  if (blankFrom < doc.length) changes.push({ from: blankFrom, to: doc.length });
+  else if (opts.finalNewline && doc.length > 0 && doc.sliceString(doc.length - 1) !== "\n")
+    changes.push({ from: doc.length, to: doc.length, insert: "\n" });
+  return changes;
+}
+
+export class DocModel {
+  readonly doc: DocId;
+  /** File path, or the URI of a virtual (read-only, language-server provided) document. */
+  path: string;
+  readonly virtual: boolean;
+  readonly sync: DocSync;
+  readonly slots = new Set<EditorSlot>();
+  /** Views outside the tab system sharing this document (e.g. the editable side of a diff). */
+  readonly attachments = new Set<DocAttachmentTarget>();
+  readonly modified = new ModifiedRanges();
+  info: LanguageInfo | undefined;
+  /** Effective `.editorconfig` properties at open time. */
+  editorconfig: EditorConfigProps | null = null;
+  desc: LanguageDescription | null;
+  language: LanguageSupport | null;
+  /** Too large for language support (no CodeMirror language, backend highlighting only). */
+  private large: boolean;
+  /** The backend's mode for this file over its language's (an Angular project's templates). */
+  private ownUiMode: string | null;
+  lastFocused: EditorSlot | null = null;
+  /** Bumped by every change (local or remote). */
+  changeCounter = 0;
+  closed = false;
+  /**
+   * Tab moved to an auxiliary editor window that already holds this document:
+   * release must drop the local model and backend ref without autosave / keep-dirty.
+   */
+  handoffRelease = false;
+  private refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  private saving: Promise<void> = Promise.resolve();
+  private backendDirty: DocDirtyEvent | null = null;
+  private meta: DocMeta;
+
+  constructor(
+    readonly manager: DocumentManager,
+    info: DocumentInfo,
+  ) {
+    this.doc = info.id;
+    this.path = info.path;
+    this.virtual = !!info.uri && !isUntitledUri(info.path);
+    this.info = languageInfo(info.language);
+    this.editorconfig = info.editorconfig ?? null;
+    // `large`: the backend skips LSP and syntax trees for it; heavy UI features follow.
+    const large = !!info.large || info.text.length > HEAVY_LIMIT;
+    this.large = large;
+    // The document's own mode (an Angular project's templates) wins over the language's.
+    this.ownUiMode = info.uiMode ?? null;
+    const uiMode = this.ownUiMode ?? this.info?.uiMode ?? null;
+    this.desc = large ? null : findLanguageDescription(uiMode, info.path);
+    this.language = loadedSupport(this.desc);
+    this.meta = {
+      doc: info.id,
+      path: info.path,
+      language: info.language,
+      uiMode: uiMode ?? this.desc?.name ?? null,
+      encoding: info.encoding,
+      hasBom: info.hasBom,
+      lineEnding: info.lineEnding,
+      // Library sources (External Libraries) open read-only, like IDEA's.
+      readOnly: info.readOnly || (!this.virtual && isLibraryPath(info.path)),
+      dirty: info.dirty,
+      canReloadEncoding: info.canReloadEncoding,
+      banner: bannerFor(info),
+      indent: { tabSize: 4, insertSpaces: true },
+    };
+    this.detectedIndent = info.readOnly && !info.text.length ? null : detectIndent(info.text.slice(0, 200_000));
+    this.meta.indent = this.effectiveIndent();
+    useDocMeta.setState({ [this.path]: this.meta });
+    this.sync = new DocSync(
+      info.version,
+      info.text,
+      {
+        edit: (base, changes) => manager.backend.edit(this.doc, base, changes),
+        snapshot: () => manager.backend.snapshot(this.doc),
+      },
+      {
+        applyRemote: (cs, grouped) => this.applyRemote(cs, grouped),
+        onLocalCommitted: (baseVersion, version, changes) => {
+          const eventChanges: Array<{ from: number; to: number; insert: string }> = [];
+          changes.iterChanges((from, to, _fromB, _toB, inserted) => {
+            eventChanges.push({ from, to, insert: inserted.toString() });
+          });
+          _emitEditorEvent({
+            type: "docChanged",
+            doc: this.doc,
+            path: this.path,
+            baseVersion,
+            version,
+            changes: eventChanges,
+          });
+        },
+        onSynced: () => this.applyBackendClean(),
+        onDiscarded: (reason) => {
+          logError(`document ${this.path}: unsaved edits replaced by the file's content`, reason);
+          manager.notify({
+            level: "warning",
+            title: "Editor resynchronised",
+            body: tx`Some unsaved edits to ${this.path} could not be applied and were replaced by the file's current content.`,
+          });
+        },
+        onError: (e) => logError(`document ${this.path}: sync error`, e),
+      },
+      manager.scheduler,
+    );
+    this.scheduleRefresh(0);
+  }
+
+  getMeta(): DocMeta {
+    return this.meta;
+  }
+
+  setMeta(patch: Partial<DocMeta>) {
+    this.meta = { ...this.meta, ...patch };
+    if (!this.closed) useDocMeta.setState({ [this.path]: this.meta });
+  }
+
+  onBackendDirty(event: DocDirtyEvent) {
+    if (this.backendDirty && event.version < this.backendDirty.version) return;
+    this.backendDirty = event;
+    if (event.dirty) {
+      if (!this.meta.dirty) this.setMeta({ dirty: true });
+    } else this.applyBackendClean();
+  }
+
+  private applyBackendClean() {
+    const event = this.backendDirty;
+    if (event && !event.dirty) this.markClean(event.version);
+  }
+
+  private markClean(version: number) {
+    // A clean event can arrive before an edit acknowledgement or after a newer edit.
+    if (!this.meta.dirty || !this.sync.idle || this.sync.serverVersion !== version) return;
+    this.modified.clear();
+    this.setMeta({ dirty: false });
+  }
+
+  ctx(): EditorDocContext {
+    return {
+      doc: this.doc,
+      path: this.path,
+      language: this.meta.language,
+      uiMode: this.meta.uiMode,
+      readOnly: this.meta.readOnly,
+      ...(this.virtual ? { virtual: true } : {}),
+    };
+  }
+
+  settings(): EditorSettings | undefined {
+    return this.manager.settings()?.editor;
+  }
+
+  addSlot(slot: EditorSlot) {
+    this.slots.add(slot);
+    if (this.highlights?.counter === this.changeCounter)
+      slot.reconfigure([setSyntaxHighlights.of(this.highlights.value)]);
+  }
+
+  removeSlot(slot: EditorSlot) {
+    if (this.slots.size === 1)
+      for (const attachment of this.attachments) attachment.adoptHistory?.(slot.currentState());
+    this.slots.delete(slot);
+    if (this.lastFocused === slot) this.lastFocused = null;
+    if (!this.inUse()) this.manager.release(this);
+  }
+
+  attach(target: DocAttachmentTarget) {
+    this.attachments.add(target);
+  }
+
+  detach(target: DocAttachmentTarget) {
+    this.attachments.delete(target);
+    if (!this.inUse()) this.manager.release(this);
+  }
+
+  /** Shown by a tab or an attached view. */
+  inUse(): boolean {
+    return this.slots.size > 0 || this.attachments.size > 0;
+  }
+
+  /** The slot to apply programmatic edits through. */
+  primarySlot(): EditorSlot | null {
+    if (this.lastFocused && this.slots.has(this.lastFocused)) return this.lastFocused;
+    for (const s of this.slots) if (s.view) return s;
+    return this.slots.values().next().value ?? null;
+  }
+
+  onLocal(changes: ChangeSet, origin: EditorSlot | DocAttachmentTarget) {
+    this.sync.local(changes);
+    this.modified.add(changes);
+    this.changeCounter++;
+    for (const s of this.slots)
+      if (s !== origin) s.applyExternal(changes, [mirroredChange.of(true), Transaction.addToHistory.of(false)]);
+    for (const a of this.attachments)
+      if (a !== origin) a.applyExternal(changes, [mirroredChange.of(true), Transaction.addToHistory.of(false)]);
+    if (!this.meta.dirty) this.setMeta({ dirty: true });
+    this.scheduleRefresh();
+  }
+
+  private applyRemote(cs: ChangeSet, grouped = false) {
+    this.modified.map(cs);
+    this.changeCounter++;
+    const primary = this.primarySlot();
+    for (const s of this.slots)
+      s.applyExternal(cs, [remoteChange.of(true), Transaction.addToHistory.of(!grouped && s === primary)]);
+    // Without a tab, the first attached view keeps backend edits (Replace in Files…) undoable.
+    let first = !grouped && !primary;
+    for (const a of this.attachments) {
+      a.applyExternal(cs, [remoteChange.of(true), Transaction.addToHistory.of(first)]);
+      first = false;
+    }
+    this.scheduleRefresh();
+  }
+
+  /**
+   * The backend detected another language (Settings › File Types, Override File
+   * Type) or mode (`angular.json` created or removed).
+   */
+  setLanguage(language: string, ownUiMode: string | null = null) {
+    if (this.closed || (language === this.meta.language && ownUiMode === this.ownUiMode)) return;
+    this.info = languageInfo(language);
+    this.ownUiMode = ownUiMode;
+    const uiMode = ownUiMode ?? this.info?.uiMode ?? null;
+    this.desc = this.large ? null : findLanguageDescription(uiMode, this.path);
+    this.language = loadedSupport(this.desc);
+    this.highlights = null;
+    this.setMeta({ language, uiMode: uiMode ?? this.desc?.name ?? null });
+    for (const s of this.slots) {
+      s.reconfigure([compartments.language.reconfigure(this.language ?? [])]);
+      s.syncContributions(true);
+    }
+    this.applySettings();
+    if (this.desc && !this.language) void this.loadLanguage();
+    this.scheduleRefresh(0);
+  }
+
+  async loadLanguage() {
+    if (!this.desc) return;
+    const support = await loadSupport(this.desc);
+    if (!support || this.closed || this.language === support) return;
+    this.language = support;
+    for (const s of this.slots) s.reconfigure([compartments.language.reconfigure(support)]);
+  }
+
+  /** Per-file indentation chosen from the status bar; wins over settings until the file is closed. */
+  indentOverride: { tabSize: number; insertSpaces: boolean } | null = null;
+  /** Indentation detected in the file's text at open time and after Reformat Code. */
+  detectedIndent: { insertSpaces: boolean; size?: number } | null = null;
+  /** Last tree-sitter highlighting, for slots opened before the next refresh. */
+  private highlights: { counter: number; value: SyntaxHighlights } | null = null;
+  /** Fold-by-default has been applied (first folding ranges of the document). */
+  private initialFolds = false;
+  /** Signature of settings that require contributions to be rebuilt. */
+  private contributionPrefs = "";
+
+  effectiveIndent() {
+    return this.indentOverride ?? effectiveIndent(this.settings(), this.info, this.editorconfig, this.detectedIndent);
+  }
+
+  /**
+   * Indentation explicit reformat requests use (`formatIndentFacet`): the Code Style
+   * (EditorConfig included) without the file's detected indents, as in IDEA, where
+   * detection only affects editing. Otherwise a file indented differently from the
+   * Code Style reformats to its own indent and other files to the Code Style's.
+   * An indent chosen for this file in the status bar still applies.
+   */
+  formatIndent() {
+    return this.indentOverride ?? effectiveIndent(this.settings(), this.info, this.editorconfig, null);
+  }
+
+  /**
+   * Detects the indents again after Reformat Code rewrote them: tabs written by
+   * the formatter then render at the Code Style tab size and new lines indent
+   * like them, instead of following the indents detected at open time.
+   */
+  redetectIndent() {
+    const detected = detectIndent(this.sync.localText.sliceString(0, 200_000));
+    const current = this.detectedIndent;
+    if (detected?.insertSpaces === current?.insertSpaces && detected?.size === current?.size) return;
+    this.detectedIndent = detected;
+    this.applySettings();
+  }
+
+  /** Soft wraps toggled for this file (wins over settings until the file is closed). */
+  softWrapOverride: boolean | null = null;
+
+  softWrapOn(): boolean {
+    const editor = this.settings();
+    return this.softWrapOverride ?? softWrapActive(editor?.softWrap, prefsOf(editor), this.path);
+  }
+
+  toggleSoftWrap() {
+    this.softWrapOverride = !this.softWrapOn();
+    this.applySettings();
+  }
+
+  /** Rendered doc comments toggled for this file (wins over settings until the file is closed). */
+  renderedDocsOverride: boolean | null = null;
+
+  renderedDocsOn(): boolean {
+    return this.renderedDocsOverride ?? prefsOf(this.settings()).appearance.renderDocComments;
+  }
+
+  toggleRenderedDocs() {
+    this.renderedDocsOverride = !this.renderedDocsOn();
+    this.applySettings();
+  }
+
+  setIndent(indent: { tabSize: number; insertSpaces: boolean }) {
+    this.indentOverride = indent;
+    this.applySettings();
+  }
+
+  /** Re-applies settings-derived compartments (settings changed). */
+  applySettings() {
+    const editor = this.settings();
+    const indent = this.effectiveIndent();
+    this.setMeta({ indent: { tabSize: indent.tabSize, insertSpaces: indent.insertSpaces } });
+    const effects = [
+      compartments.indent.reconfigure(indentExtension(indent, this.formatIndent())),
+      compartments.wrap.reconfigure(wrapExtension(editor, this.path, this.softWrapOverride)),
+      compartments.sticky.reconfigure(stickyExtension(editor)),
+      compartments.font.reconfigure(fontExtension(editor)),
+      compartments.comments.reconfigure(commentTokens(this.info, this.meta.language)),
+      compartments.lineNumbers.reconfigure(lineNumbersExtension(editor)),
+      compartments.folding.reconfigure(foldingFor(editor)),
+      compartments.caret.reconfigure(caretFor(editor)),
+      compartments.heavy.reconfigure(heavyExtension(this.sync.localText.length, editor)),
+      compartments.distractionFree.reconfigure(distractionFreeExtension(editor)),
+      compartments.prefs.reconfigure(
+        prefsFor({
+          settings: editor,
+          path: this.path,
+          info: this.info,
+          readOnly: this.meta.readOnly,
+          wrapOverride: this.softWrapOverride,
+          renderedDocsOverride: this.renderedDocsOverride,
+        }),
+      ),
+    ];
+    // LSP contributions read completion / hover timings when they are built.
+    const p = prefsOf(editor);
+    const sig = JSON.stringify([p.codeEditing.quickDocDelay, p.completion.autoPopup]);
+    const rebuild = !!this.contributionPrefs && sig !== this.contributionPrefs;
+    this.contributionPrefs = sig;
+    for (const s of this.slots) {
+      s.reconfigure(effects);
+      if (rebuild) s.syncContributions(true);
+    }
+  }
+
+  setReadOnly(readOnly: boolean) {
+    if (readOnly === this.meta.readOnly) return;
+    const banner = this.meta.banner;
+    this.setMeta({
+      readOnly,
+      banner: readOnly
+        ? (banner ?? (this.virtual ? null : "readOnly"))
+        : banner === "readOnly" || banner === "library"
+          ? null
+          : banner,
+    });
+    for (const s of this.slots) {
+      s.reconfigure([
+        compartments.readOnly.reconfigure(readOnlyExtension(readOnly)),
+        compartments.prefs.reconfigure(
+          prefsFor({
+            settings: this.settings(),
+            path: this.path,
+            info: this.info,
+            readOnly,
+            wrapOverride: this.softWrapOverride,
+            renderedDocsOverride: this.renderedDocsOverride,
+          }),
+        ),
+      ]);
+      s.syncContributions(true);
+    }
+  }
+
+  setHeavy() {
+    const len = this.sync.localText.length;
+    for (const s of this.slots) s.reconfigure([compartments.heavy.reconfigure(heavyExtension(len, this.settings()))]);
+  }
+
+  // --- background refresh (folding ranges, outline) -------------------------
+
+  scheduleRefresh(delay = REFRESH_DELAY) {
+    if (this.meta.banner === "binary" || this.meta.banner === "tooLarge") return;
+    clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout(() => void this.refresh(), delay);
+  }
+
+  private async refresh() {
+    if (this.closed) return;
+    await this.sync.whenIdle();
+    const counter = this.changeCounter;
+    const backend = this.manager.backend;
+    const [folds, outline, highlights] = await Promise.allSettled([
+      backend.folding(this.doc),
+      backend.outline(this.doc),
+      !this.desc || GRAMMAR_SUPPLEMENTED.has(this.meta.language) ? backend.highlights(this.doc) : null,
+    ]);
+    if (this.closed) return;
+    if (counter !== this.changeCounter) {
+      this.scheduleRefresh();
+      return;
+    }
+    if (folds.status === "fulfilled") {
+      for (const s of this.slots) s.reconfigure([setBackendFolds.of(folds.value)]);
+      if (!this.initialFolds) {
+        this.initialFolds = true;
+        this.foldByDefault();
+      }
+    }
+    if (highlights.status === "fulfilled" && highlights.value) {
+      this.highlights = { counter, value: highlights.value };
+      for (const s of this.slots) s.reconfigure([setSyntaxHighlights.of(highlights.value)]);
+    }
+    if (outline.status === "fulfilled") {
+      useOutline.setState({ [this.path]: outline.value });
+      const lines = methodLines(outline.value);
+      for (const s of this.slots) s.reconfigure([setMethodLines.of(lines)]);
+    }
+  }
+
+  /** Code Folding › "Fold by default": file header, imports, documentation comments. */
+  private foldByDefault() {
+    const f = prefsOf(this.settings()).folding;
+    if (!f.fileHeader && !f.imports && !f.docComments) return;
+    for (const s of this.slots) {
+      const state = s.currentState();
+      const folds = state.field(backendFolds, false) ?? [];
+      const info = this.info;
+      const firstCodeLine = (() => {
+        for (let n = 1; n <= state.doc.lines; n++) {
+          const t = state.doc.line(n).text.trim();
+          if (t && !t.startsWith("#!")) return n;
+        }
+        return 0;
+      })();
+      const chosen = folds.filter((r) => {
+        if (r.kind === "imports") return f.imports;
+        if (r.kind !== "comment") return false;
+        // A file header must sit at the top AND start with a comment token.
+        // Keeping the position check keeps ordinary doc comments further down
+        // under "documentation comments"; the token check keeps a Python module
+        // docstring (which opens with quotes) out of the file-header toggle.
+        const first = state.doc.lineAt(r.from);
+        const header = isFileHeaderFold(first.number, firstCodeLine, first.text, info?.lineComment, info?.blockComment);
+        return header ? f.fileHeader : f.docComments;
+      });
+      const effects: StateEffect<unknown>[] = chosen.map((r) => foldEffect.of({ from: r.from, to: r.to }));
+      // Folding the header / imports shifts everything below: keep a navigation
+      // target (caret revealed on open) in view.
+      const head = state.selection.main.head;
+      if (effects.length && head > 0 && !chosen.some((r) => r.from < head && head <= r.to))
+        effects.push(EditorView.scrollIntoView(head, { y: "center" }));
+      if (effects.length) s.reconfigure(effects);
+    }
+  }
+
+  // --- saving -----------------------------------------------------------------
+
+  save(reason: "explicit" | "auto" | "exact"): Promise<void> {
+    const run = async () => {
+      if (this.closed || this.meta.readOnly || !this.meta.dirty) return;
+      const slot = this.primarySlot();
+      if (reason === "explicit") {
+        for (const p of _saveParticipants()) {
+          try {
+            await p.beforeSave(this.ctx(), slot?.handle ?? null, "explicit");
+          } catch (e) {
+            console.warn(`save participant ${p.id} failed`, e);
+          }
+        }
+      }
+      const files: FileSettings | undefined = this.manager.settings()?.files;
+      if (slot && !this.closed && reason !== "exact") {
+        const state = slot.currentState();
+        const protectLines = new Set<number>();
+        // Like IDEA's "keep trailing spaces on caret line": never strip under a visible caret.
+        for (const s of this.slots) {
+          if (!s.view) continue;
+          const st = s.currentState();
+          for (const r of st.selection.ranges) protectLines.add(st.doc.lineAt(r.head).number);
+        }
+        const g = prefsOf(this.settings()).general;
+        const ec = prefsOf(this.settings()).codeStyle.editorconfig ? this.editorconfig : null;
+        const changes = saveCleanupChanges(state, this.modified, {
+          trim: ec?.trimTrailingWhitespace ?? files?.trimTrailingWhitespace ?? true,
+          finalNewline: ec?.insertFinalNewline ?? files?.ensureFinalNewline ?? true,
+          protectLines: g.keepTrailingOnCaretLine ? protectLines : new Set(),
+          allLines: g.stripTrailingScope === "all",
+          trailingBlankLines: g.removeTrailingBlankLines,
+        });
+        if (changes.length) slot.dispatchLocal({ changes, userEvent: "input.save" });
+      }
+      await this.sync.whenIdle();
+      if (this.closed) return;
+      if (isUntitledUri(this.path)) {
+        // An untitled buffer has no path to write to: autosave is a no-op and
+        // an explicit save asks for one (Save As re-points the buffer, or stays
+        // dirty on Cancel).
+        if (reason === "auto") return;
+        await this.manager.saveAs(this);
+        return;
+      }
+      const backend = this.manager.backend;
+      const version = this.sync.serverVersion;
+      const observedDirty = this.backendDirty;
+      // Autosave never overwrites external changes made after the buffer was edited.
+      if (reason === "auto" && backend.autosave) {
+        if (!(await backend.autosave(this.doc))) return;
+      } else await backend.save(this.doc);
+      // The reply does not identify what was saved. It only confirms the version
+      // we sent if the buffer and the observed backend dirty state haven't moved on.
+      if (this.backendDirty === observedDirty && (!observedDirty || observedDirty.version <= version))
+        this.markClean(version);
+      _emitEditorEvent({ type: "docSaved", doc: this.doc, path: this.path });
+    };
+    this.saving = this.saving.then(run, run);
+    return this.saving;
+  }
+
+  /** Save As turned this untitled buffer into the file `info` points at. */
+  retarget(info: DocumentInfo) {
+    const old = this.path;
+    if (!this.backendDirty?.dirty || this.backendDirty.version < info.version) this.markClean(info.version);
+    this.path = info.path;
+    this.info = languageInfo(info.language);
+    this.editorconfig = info.editorconfig ?? null;
+    this.meta = {
+      ...this.meta,
+      path: info.path,
+      language: info.language,
+      encoding: info.encoding,
+      hasBom: info.hasBom,
+      lineEnding: info.lineEnding,
+      canReloadEncoding: info.canReloadEncoding,
+    };
+    useDocMeta.setState((s) => {
+      const next = { ...s };
+      delete next[old];
+      next[info.path] = this.meta;
+      return next;
+    }, true);
+    _emitEditorEvent({ type: "docSaved", doc: this.doc, path: this.path });
+  }
+
+  dispose() {
+    this.closed = true;
+    clearTimeout(this.refreshTimer);
+    this.sync.dispose();
+  }
+}
+
+export interface ManagerHost {
+  settings(): Settings | null | undefined;
+  notify(n: { level: "info" | "warning" | "error"; title: string; body?: string }): void;
+  /**
+   * An untitled buffer's explicit save: asks for a path, writes the buffer
+   * there and re-points the model. `false` = cancelled or failed.
+   */
+  saveAs?(model: DocModel): Promise<boolean>;
+}
+
+export class DocumentManager {
+  readonly workspaceHistory = new WorkspaceHistory(
+    async () => {
+      await Promise.all([...this.byPath.values()].map((m) => m.sync.whenIdle()));
+    },
+    (n) => this.notify(n),
+  );
+  readonly byPath = new Map<string, DocModel>();
+  readonly byId = new Map<DocId, DocModel>();
+  private opening = new Map<string, Promise<DocModel>>();
+  contributionsVersion = 0;
+  private disposers: Array<() => void> = [];
+
+  constructor(
+    readonly backend: DocBackend,
+    private host: ManagerHost,
+    readonly scheduler: Scheduler = frameScheduler,
+  ) {}
+
+  settings() {
+    return this.host.settings();
+  }
+
+  notify(n: Parameters<ManagerHost["notify"]>[0]) {
+    this.host.notify(n);
+  }
+
+  start() {
+    this.disposers.push(
+      this.workspaceHistory.start(),
+      this.backend.onPatched((e) => this.byId.get(e.doc)?.sync.remote(e)),
+      this.backend.onLanguage?.((e) => this.byId.get(e.doc)?.setLanguage(e.language, e.uiMode)) ?? (() => {}),
+      this.backend.onDirty((e) => this.byId.get(e.doc)?.onBackendDirty(e)),
+    );
+    let prev = useEditorRegistry.getState().contributions;
+    this.disposers.push(
+      useEditorRegistry.subscribe((s) => {
+        if (s.contributions === prev) return;
+        prev = s.contributions;
+        this.contributionsVersion++;
+        for (const m of this.byPath.values()) for (const slot of m.slots) slot.syncContributions();
+      }),
+    );
+    void loadLanguageInfos(this.backend);
+  }
+
+  stop() {
+    this.disposers.splice(0).forEach((d) => d());
+  }
+
+  get(path: string): DocModel | undefined {
+    return this.byPath.get(path);
+  }
+
+  /** Registers a backend document opened outside `acquire` (a minted untitled buffer). */
+  adopt(info: DocumentInfo): DocModel {
+    const model = new DocModel(this, info);
+    void model.loadLanguage();
+    this.byPath.set(model.path, model);
+    this.byId.set(model.doc, model);
+    _emitEditorEvent({ type: "docOpened", doc: model.doc, path: model.path, language: info.language });
+    return model;
+  }
+
+  /** An untitled buffer's explicit save (Save As); `false` = cancelled or failed. */
+  saveAs(model: DocModel): Promise<boolean> {
+    return this.host.saveAs?.(model) ?? Promise.resolve(false);
+  }
+
+  /** Save As re-pointed `model` from its untitled URI to a real file path. */
+  retarget(model: DocModel, info: DocumentInfo) {
+    if (model.path === info.path) return;
+    this.byPath.delete(model.path);
+    this.byPath.set(info.path, model);
+    model.retarget(info);
+  }
+
+  /** Opens (or returns the already open) document model for `path`. */
+  acquire(path: string): Promise<DocModel> {
+    const existing = this.byPath.get(path);
+    if (existing) return Promise.resolve(existing);
+    let p = this.opening.get(path);
+    if (!p) {
+      p = (async () => {
+        const catalog = loadLanguageInfos(this.backend);
+        void catalog
+          .then(() => {
+            const desc = findLanguageDescription(uiModeForPath(path) ?? null, path);
+            if (desc) return loadSupport(desc);
+          })
+          .catch(() => {});
+        const [info] = await Promise.all([
+          isUntitledUri(path)
+            ? this.backend.openUntitled(path)
+            : isVirtualUri(path)
+              ? this.backend.openVirtual(path)
+              : this.backend.open(path),
+          catalog,
+        ]);
+        const raced = this.byPath.get(path);
+        if (raced) {
+          void this.backend.close(info.id);
+          return raced;
+        }
+        const model = new DocModel(this, info);
+        // The first slot must include the lazy mode, not briefly render plain text.
+        await model.loadLanguage();
+        this.byPath.set(path, model);
+        this.byId.set(model.doc, model);
+        _emitEditorEvent({ type: "docOpened", doc: model.doc, path, language: info.language });
+        return model;
+      })().finally(() => this.opening.delete(path));
+      this.opening.set(path, p);
+    }
+    return p;
+  }
+
+  /** Called when the last slot of a model goes away. */
+  release(model: DocModel) {
+    if (model.closed || model.inUse()) return;
+    // Defer so that "close tab + reopen in split" in one tick keeps the model.
+    queueMicrotask(async () => {
+      if (model.inUse() || model.closed) return;
+      const handoff = model.handoffRelease;
+      model.handoffRelease = false;
+      const files = this.settings()?.files;
+      if (!handoff && files?.autoSave !== false && model.getMeta().dirty) {
+        try {
+          await model.save("auto");
+        } catch (e) {
+          console.warn(`autosave of ${model.path} failed`, e);
+        }
+      }
+      // As in IDEA, a file whose changes are not saved (autosave off, or a failed save) stays
+      // open without a tab: reopening shows the changes, and Save All and the exit check still
+      // cover them. An untitled buffer was asked about when its tab closed.
+      // Handoff to an aux editor: the sibling window already references the same document.
+      if (!handoff && model.getMeta().dirty && !isUntitledUri(model.path)) return;
+      if (model.inUse()) return;
+      await model.sync.whenIdle();
+      if (model.inUse() || model.closed) return;
+      this.forget(model);
+      try {
+        await this.backend.close(model.doc);
+      } catch (e) {
+        console.warn(`doc_close ${model.path} failed`, e);
+      }
+    });
+  }
+
+  /**
+   * The project closed or another one replaced it: its backend documents are gone, including
+   * those kept open without a tab for their unsaved changes (the leave guard already saved or
+   * discarded them). Untitled buffers follow the window and stay.
+   */
+  releaseProjectDocuments() {
+    for (const model of [...this.byPath.values()]) if (!isUntitledUri(model.path)) this.forget(model);
+  }
+
+  private forget(model: DocModel) {
+    model.dispose();
+    this.byPath.delete(model.path);
+    this.byId.delete(model.doc);
+    useDocMeta.setState((s) => {
+      const next = { ...s };
+      delete next[model.path];
+      return next;
+    }, true);
+    useOutline.setState((s) => {
+      const next = { ...s };
+      delete next[model.path];
+      return next;
+    }, true);
+    _emitEditorEvent({ type: "docClosed", doc: model.doc, path: model.path });
+  }
+
+  applySettings() {
+    for (const m of this.byPath.values()) m.applySettings();
+  }
+
+  /** Saves dirty documents; failures are notified, and an explicit Save All also rejects with them. */
+  async saveAll(reason: "explicit" | "auto", skipUntitled = false) {
+    const errors: unknown[] = [];
+    await Promise.all(
+      [...this.byPath.values()]
+        .filter((m) => !(skipUntitled && isUntitledUri(m.path)))
+        .map((m) =>
+          m.save(reason).catch((e) => {
+            errors.push(e);
+          }),
+        ),
+    );
+    if (errors.length) {
+      const e = errors[0];
+      this.notify({ level: "error", title: "Could not save", body: e instanceof Error ? e.message : String(e) });
+      if (reason === "explicit")
+        throw errors.length === 1 ? e : new AggregateError(errors, e instanceof Error ? e.message : String(e));
+    }
+  }
+}

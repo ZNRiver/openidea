@@ -1,0 +1,162 @@
+.view {
+  --coverage-metrics: 2;
+  --coverage-metric-width: min(29cqi, 128px);
+  --coverage-column-gap: var(--space-2);
+  container-type: inline-size;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.noBranches {
+  --coverage-metrics: 1;
+}
+.tabs {
+  min-width: 0;
+  border: 0;
+  background: none;
+}
+.banner {
+  padding: 2px 10px;
+  font-size: var(--fs-small);
+  color: var(--fg-muted);
+  border-bottom: 1px solid var(--border);
+}
+.header,
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(var(--coverage-metrics), var(--coverage-metric-width));
+  align-items: center;
+  column-gap: var(--coverage-column-gap);
+  font-size: var(--fs-ui);
+}
+.header {
+  flex: none;
+  height: 24px;
+  padding-inline: 30px 14px;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+}
+.header,
+.tree [role="tree"] {
+  scrollbar-gutter: stable;
+}
+.header::-webkit-scrollbar {
+  width: 10px;
+}
+.headerCell {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-0-5);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--fg-secondary);
+  text-align: left;
+  cursor: default;
+}
+.headerCell:hover {
+  color: var(--fg-strong);
+}
+.headerCell svg {
+  flex: none;
+}
+.tree {
+  flex: 1;
+  min-height: 0;
+  /* Keep the chevron and icon in the name column at deeper levels. */
+  --coverage-max-row-inset: max(
+    4px,
+    calc(100% - var(--coverage-metrics) * (var(--coverage-metric-width) + var(--coverage-column-gap)) - 72px)
+  );
+}
+.row {
+  flex: 1;
+  min-width: 0;
+}
+.name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+}
+.icon {
+  flex: none;
+}
+.label,
+.value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.value {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-secondary);
+}
+@container (width < 360px) {
+  .header,
+  .tree {
+    --coverage-metric-width: min(23cqi, 65px);
+    --coverage-column-gap: var(--space-1);
+  }
+  .count {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+}
+.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--link);
+  cursor: pointer;
+}
+.link:hover {
+  color: var(--link-hover);
+}
+.links {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+
+/* Manage Coverage Reports */
+.reports {
+  height: 260px;
+  margin: 12px;
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+.reportRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+}
+.reportDetail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-subtle);
+}
+.reportTime {
+  flex: none;
+  font-size: var(--fs-small);
+  color: var(--fg-muted);
+}
+.reportsEmpty {
+  padding: 12px;
+  color: var(--fg-muted);
+}

@@ -1,0 +1,223 @@
+import { describe, expect, it } from "vitest";
+import { groupUsages, trimPreview, usageCount } from "./usages";
+import { serversSummary, type ServerEntry } from "./servers";
+import { buildProblemNodes } from "./ProblemsView";
+import type { Diagnostic } from "@/bindings";
+import { mergeDiagnostics, sortProblems, type ProblemOrder, type ProblemsMap } from "./problemsStore";
+import { toggleExcludedUsages } from "./UsagesView";
+import { childId, directionLabel } from "./hierarchy";
+
+const loc = (path: string, line: number, col: number, endCol: number) => ({
+  path,
+  range: { start: { line, col }, end: { line, col: endCol } },
+});
+
+describe("usages", () => {
+  it("groups by file with previews, sorted and de-duplicated", () => {
+    const files = new Map<string, string[] | null>([
+      ["/p/b.ts", ["", "  const x = foo();"]],
+      ["/p/a.ts", null],
+    ]);
+    const groups = groupUsages(
+      [loc("/p/b.ts", 1, 12, 15), loc("/p/a.ts", 4, 0, 3), loc("/p/b.ts", 1, 12, 15), loc("/p/b.ts", 0, 0, 0)],
+      files,
+    );
+    expect(groups.map((g) => [g.path, g.usages.map((u) => u.line)])).toEqual([
+      ["/p/a.ts", [4]],
+      ["/p/b.ts", [0, 1]],
+    ]);
+    expect(usageCount(groups)).toBe(3);
+    expect(groups[0]!.usages[0]!.text).toBe("");
+    expect(trimPreview(groups[1]!.usages[1]!)).toEqual({ text: "const x = foo();", textCol: 2, from: 10, to: 13 });
+  });
+});
+
+describe("serversSummary", () => {
+  const s = (name: string, status: ServerEntry["status"]): ServerEntry => ({
+    id: Math.random(),
+    name,
+    status,
+    message: null,
+    languages: [],
+    root: null,
+  });
+  it("summarises names and the worst state", () => {
+    expect(serversSummary([])).toBeNull();
+    expect(serversSummary([s("rust-analyzer", "ready")])).toEqual({ text: "rust-analyzer", tone: "ok" });
+    expect(serversSummary([s("vtsls", "ready"), s("eslint", "starting")])).toEqual({ text: "vtsls +1", tone: "busy" });
+    expect(serversSummary([s("gopls", "missing")])!.tone).toBe("error");
+    expect(serversSummary([s("jdtls", "misconfigured")])!.tone).toBe("error");
+  });
+});
+
+describe("buildProblemNodes", () => {
+  it("lists files with errors first and applies the severity filter", () => {
+    const diag = (severity: "error" | "warning" | "hint") => ({
+      range: { start: { line: 0, col: 0 }, end: { line: 0, col: 1 } },
+      severity,
+      message: severity,
+      source: null,
+      code: null,
+    });
+    let map = mergeDiagnostics(new Map(), "/a", "s", [diag("warning")]);
+    map = mergeDiagnostics(map, "/b", "s", [diag("error"), diag("hint")]);
+    const all = buildProblemNodes(map, ["/a", "/b"], { error: true, warning: true, info: true });
+    expect(all.map((n) => n.key)).toEqual(["/b", "/a"]);
+    const errorsOnly = buildProblemNodes(map, ["/a", "/b"], { error: true, warning: false, info: false });
+    expect(errorsOnly.map((n) => n.key)).toEqual(["/b"]);
+    expect(errorsOnly[0]!.kind === "file" && errorsOnly[0]!.items.length).toBe(1);
+  });
+
+  it("matches a full rebuild across single-file updates, filters and sort orders", () => {
+    let seed = 11;
+    const random = (n: number) => (seed = (seed * 48271) % 2147483647) % n;
+    const SEVERITIES = ["error", "warning", "info", "hint"] as const;
+    const MESSAGES = ["alpha", "Alpha", "beta 2", "beta 10"];
+    const items = (): Diagnostic[] =>
+      Array.from({ length: random(6) }, () => ({
+        range: { start: { line: random(3), col: random(2) }, end: { line: 3, col: 0 } },
+        severity: SEVERITIES[random(4)]!,
+        message: MESSAGES[random(4)]!,
+        source: null,
+        code: String(random(1000)),
+      }));
+    // buildProblemNodes as it was before per-file caching.
+    const rebuild = (map: ProblemsMap, paths: string[], show: Record<string, boolean>, order: ProblemOrder) => {
+      const files = paths.flatMap((path) => {
+        const all = [...(map.get(path)?.values() ?? [])]
+          .flat()
+          .sort(
+            (a, b) =>
+              a.range.start.line - b.range.start.line ||
+              a.range.start.col - b.range.start.col ||
+              SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity),
+          );
+        const shown = sortProblems(
+          all.filter((d) => show[d.severity === "hint" ? "info" : d.severity]),
+          order,
+        );
+        return shown.length ? [{ path, items: shown }] : [];
+      });
+      const rank = (f: { items: Diagnostic[] }) => (f.items.some((d) => d.severity === "error") ? 0 : 1);
+      return files.sort((a, b) => rank(a) - rank(b) || a.path.localeCompare(b.path));
+    };
+    // Neighbours differ in one flag, so a cache that ignored any of them would serve stale nodes.
+    const shows = ["111", "101", "100", "000", "010", "011"].map(([e, w, i]) => ({
+      error: e === "1",
+      warning: w === "1",
+      info: i === "1",
+    }));
+    const orders = ["10", "00", "01", "11"].map(([s, n]) => ({ bySeverity: s === "1", byName: n === "1" }));
+    let map: ProblemsMap = new Map();
+    for (let step = 0; step < 300; step++) {
+      const path = `/p/${["b", "A", "a", "c10", "c2"][random(5)]}/${random(4)}.ts`;
+      map = mergeDiagnostics(map, path, ["lsp", "eslint"][random(2)]!, items());
+      const show = shows[Math.floor(step / 20) % shows.length]!;
+      const order = orders[Math.floor(step / 35) % orders.length]!;
+      const paths = [...map.keys()];
+      const nodes = buildProblemNodes(map, paths, { ...show }, { ...order });
+      expect(nodes.map((n) => ({ path: n.path, items: n.items }))).toEqual(rebuild(map, paths, show, order));
+      const some = paths.filter((_, i) => i % 3 === 0);
+      expect(buildProblemNodes(map, some, show, order).map((n) => ({ path: n.path, items: n.items }))).toEqual(
+        rebuild(map, some, show, order),
+      );
+    }
+  });
+
+  it("reuses the nodes of files an update didn't touch", () => {
+    const diag = (line: number) => ({
+      range: { start: { line, col: 0 }, end: { line, col: 1 } },
+      severity: "error" as const,
+      message: "x",
+      source: null,
+      code: null,
+    });
+    const show = { error: true, warning: true, info: true };
+    let map = mergeDiagnostics(new Map(), "/a", "s", [diag(1)]);
+    map = mergeDiagnostics(map, "/b", "s", [diag(2)]);
+    const [a, b] = buildProblemNodes(map, ["/a", "/b"], show);
+    map = mergeDiagnostics(map, "/b", "s", [diag(3)]);
+    const [a2, b2] = buildProblemNodes(map, ["/a", "/b"], show);
+    expect(a2).toBe(a);
+    expect(b2).not.toBe(b);
+    const shared = map.get("/a")!;
+    const twice = new Map([
+      ["/a", shared],
+      ["/c", shared],
+    ]);
+    expect(buildProblemNodes(twice, ["/a", "/c"], show).map((n) => n.path)).toEqual(["/a", "/c"]);
+  });
+});
+
+describe("hierarchy", () => {
+  it("labels directions and builds unique child ids", () => {
+    expect(directionLabel("call", "incoming")).toBe("Callers");
+    expect(directionLabel("type", "outgoing")).toBe("Subtypes");
+    const item = {
+      name: "f",
+      kind: "function" as const,
+      detail: null,
+      path: "/a.rs",
+      range: { start: { line: 1, col: 0 }, end: { line: 3, col: 1 } },
+      selectionRange: { start: { line: 1, col: 3 }, end: { line: 1, col: 4 } },
+      fromRanges: [],
+    };
+    expect(childId("root", item)).toBe("root//a.rs:1:3:f");
+  });
+});
+
+describe("sortProblems", () => {
+  const d = (severity: "error" | "warning", line: number, message: string) => ({
+    range: { start: { line, col: 0 }, end: { line, col: 1 } },
+    severity,
+    message,
+    source: null,
+    code: null,
+  });
+  const items = [d("warning", 1, "b"), d("error", 5, "c"), d("warning", 0, "z"), d("error", 2, "a")];
+  const lines = (order: { bySeverity: boolean; byName: boolean }) =>
+    sortProblems(items, order).map((x) => x.range.start.line);
+
+  it("orders by severity, then position (IDEA's default)", () => {
+    expect(lines({ bySeverity: true, byName: false })).toEqual([2, 5, 0, 1]);
+  });
+  it("orders by position or by name when asked", () => {
+    expect(lines({ bySeverity: false, byName: false })).toEqual([0, 1, 2, 5]);
+    expect(lines({ bySeverity: false, byName: true })).toEqual([2, 1, 5, 0]);
+  });
+});
+
+describe("toggleExcludedUsages", () => {
+  const u = (line: number) => ({ path: "/a", line, col: 0, endCol: 1, text: "" });
+  it("excludes a group unless all of it is excluded already", () => {
+    const one = toggleExcludedUsages(new Set(), [u(1)]);
+    expect([...one]).toEqual(["/a:1:0:1:1"]);
+    const both = toggleExcludedUsages(one, [u(1), u(2)]);
+    expect([...both].sort()).toEqual(["/a:1:0:1:1", "/a:2:0:2:1"]);
+    expect(toggleExcludedUsages(both, [u(1), u(2)]).size).toBe(0);
+  });
+});
+
+it("preserves semantic categories for separate ranges on the same source line", () => {
+  const getter = { path: "/Bean.java", range: { start: { line: 0, col: 12 }, end: { line: 0, col: 19 } } };
+  const setter = { path: "/Bean.java", range: { start: { line: 0, col: 2 }, end: { line: 0, col: 9 } } };
+  const groups = groupUsages([getter, setter], new Map([["/Bean.java", ["b.setName(b.getName())"]]]), [
+    { location: getter, kind: "getter" },
+    { location: setter, kind: "setter" },
+  ]);
+  expect(groups[0]!.usages.map((u) => [u.col, u.kind])).toEqual([
+    [2, "setter"],
+    [12, "getter"],
+  ]);
+});
+
+it("retains nested references sharing a start and their exact multiline range", () => {
+  const inner = { path: "/Bean.java", range: { start: { line: 0, col: 0 }, end: { line: 0, col: 9 } } };
+  const outer = { path: "/Bean.java", range: { start: { line: 0, col: 0 }, end: { line: 1, col: 10 } } };
+  const groups = groupUsages([inner, outer], new Map([["/Bean.java", ["b.value()", ".value(x);"]]]), [
+    { location: inner, kind: "getter" },
+    { location: outer, kind: "setter" },
+  ]);
+  expect(groups[0]!.usages).toHaveLength(2);
+  expect(groups[0]!.usages[1]!.sourceLocation).toEqual(outer);
+});

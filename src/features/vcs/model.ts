@@ -1,0 +1,251 @@
+/** Pure VCS model helpers: effective file status, colours, decorations. */
+import type { ChangeKind, FileStatus } from "@/bindings";
+import type { FileDecoration } from "@/workbench/contributions";
+import { formatDay, formatTimestamp } from "@/platform/dateFormat";
+import { tx } from "@/platform/i18n";
+
+/** What a file looks like in IDEA's change lists (one kind per file). */
+export type EffectiveKind = "modified" | "added" | "deleted" | "renamed" | "untracked" | "ignored" | "conflicted";
+
+export function effectiveKind(fs: Pick<FileStatus, "staged" | "unstaged">): EffectiveKind | null {
+  const { staged, unstaged } = fs;
+  if (staged === "conflicted" || unstaged === "conflicted") return "conflicted";
+  if (unstaged === "untracked") return staged ? kindOf(staged) : "untracked";
+  if (unstaged === "ignored") return "ignored";
+  // A file added to the index stays "added" (green) while it has further edits.
+  if (staged === "added") return unstaged === "deleted" ? null : "added";
+  if (unstaged === "deleted" || staged === "deleted") return "deleted";
+  if (staged === "renamed") return "renamed";
+  if (staged || unstaged) return "modified";
+  return null;
+}
+
+function kindOf(k: ChangeKind): EffectiveKind {
+  return k === "untracked" ? "untracked" : k;
+}
+
+export const KIND_COLOR: Record<EffectiveKind, string> = {
+  modified: "var(--vcs-modified)",
+  renamed: "var(--vcs-modified)",
+  added: "var(--vcs-added)",
+  deleted: "var(--vcs-deleted)",
+  untracked: "var(--vcs-untracked)",
+  ignored: "var(--vcs-ignored)",
+  conflicted: "var(--vcs-conflict)",
+};
+
+export const KIND_LABEL: Record<EffectiveKind, string> = {
+  modified: "Modified",
+  renamed: "Renamed",
+  added: "Added",
+  deleted: "Deleted",
+  untracked: "Unversioned",
+  ignored: "Ignored",
+  conflicted: "Merge conflict",
+};
+
+/** Folder colour precedence: earlier kinds win when a folder holds several. */
+const FOLDER_PRECEDENCE: EffectiveKind[] = ["conflicted", "modified", "renamed", "added", "deleted", "untracked"];
+
+export function stripSlash(path: string): string {
+  return path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
+}
+
+/**
+ * File decorations for the project tree / tabs. Keys are absolute paths.
+ * Folders inherit the colour of their most significant descendant (conflict,
+ * then modified…), as IDEA's "highlight directories that contain modified files".
+ */
+export function statusDecorations(status: readonly FileStatus[], propagate = true): Map<string, FileDecoration> {
+  const entries: Array<[string, FileDecoration, number]> = [];
+  for (const fs of status) {
+    const kind = effectiveKind(fs);
+    if (!kind) continue;
+    const deco: FileDecoration = {
+      color: KIND_COLOR[kind],
+      tooltip: fs.renamedFrom ? tx`${KIND_LABEL[kind]} (from ${fs.renamedFrom})` : KIND_LABEL[kind],
+    };
+    if (kind === "ignored") deco.faded = true;
+    // Settings › Version Control › Show directories with changed descendants.
+    else if (propagate) deco.propagate = true;
+    // Git reports untracked / ignored folders as one `dir/` entry: decorate their whole content.
+    if (fs.path.endsWith("/")) deco.subtree = true;
+    const rank = FOLDER_PRECEDENCE.indexOf(kind);
+    entries.push([stripSlash(fs.path), deco, rank < 0 ? FOLDER_PRECEDENCE.length : rank]);
+  }
+  // `setFileDecorations` gives folders the colour of the first propagating entry.
+  entries.sort((a, b) => a[2] - b[2]);
+  return new Map(entries.map(([p, d]) => [p, d]));
+}
+
+export function relTo(root: string, path: string): string {
+  return path.startsWith(root + "/") ? path.slice(root.length + 1) : path;
+}
+
+/**
+ * The innermost of `roots` (repository roots) containing `path`. A nested repository's root
+ * is an entry of the enclosing one (submodule, untracked folder), so it belongs there; to
+ * itself only when no root encloses it (as the backend routes it).
+ */
+export function rootOf(path: string, roots: readonly string[]): string | null {
+  const p = stripSlash(path);
+  let best: string | null = null;
+  for (const r of roots) if (p.startsWith(`${r}/`) && (!best || r.length > best.length)) best = r;
+  return best ?? (roots.includes(p) ? p : null);
+}
+
+/** Repository name for display: its folder relative to the project, else its folder name. */
+export function repoLabel(root: string, projectRoot: string | null): string {
+  if (projectRoot && root.startsWith(`${projectRoot}/`)) return root.slice(projectRoot.length + 1);
+  return baseName(root) || root;
+}
+
+export function baseName(path: string): string {
+  const p = stripSlash(path);
+  const i = p.lastIndexOf("/");
+  return i < 0 ? p : p.slice(i + 1);
+}
+
+export function dirName(path: string): string {
+  const p = stripSlash(path);
+  const i = p.lastIndexOf("/");
+  return i < 0 ? "" : p.slice(0, i);
+}
+
+/**
+ * Changed-file label for a rename, in IDEA's wording: `renamed from old.txt` when the
+ * file stays in its directory, `moved from ../old/old.txt` when it changed directories
+ * — the old path relative to the file's new directory, so the move is visible.
+ */
+export function renameFrom(newPath: string, oldPath: string): string {
+  const dir = dirName(newPath);
+  if (dirName(oldPath) === dir) return tx`renamed from ${baseName(oldPath)}`;
+  return tx`moved from ${relativePath(dir, oldPath)}`;
+}
+
+/** `path` seen from the directory `from`, with `../` segments to climb out of it. */
+function relativePath(from: string, path: string): string {
+  const source = from ? from.split("/") : [];
+  const target = path.split("/");
+  let common = 0;
+  while (common < source.length && common < target.length - 1 && source[common] === target[common]) common++;
+  return "../".repeat(source.length - common) + target.slice(common).join("/");
+}
+
+/** List timestamp per Settings › System Settings › Date Formats. */
+export function formatTime(ms: number | null | undefined, now = Date.now()): string {
+  return ms ? formatTimestamp(ms, now) : "";
+}
+
+export function formatDate(ms: number | null | undefined): string {
+  return ms ? formatDay(new Date(ms), undefined, true) : "";
+}
+
+export function formatSize(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** Parses a git progress line ("Receiving objects:  45% (9/20)") into a fraction. */
+export function progressFraction(line: string): number | null {
+  const m = /(\d{1,3})%/.exec(line);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return n >= 0 && n <= 100 ? n / 100 : null;
+}
+
+/**
+ * Splits a stash subject (`On main: msg`, `WIP on main: 1a2b3c subject`) into
+ * the branch and the user-facing text, as IDEA's stash list shows them.
+ */
+export function stashLabel(message: string): { branch: string | null; text: string } {
+  const m = /^(?:WIP on|On) ([^:]+): ?(.*)$/s.exec(message);
+  if (!m) return { branch: null, text: message };
+  return { branch: m[1]!, text: m[2]!.trim() || message };
+}
+
+/** SSH front hosts that serve the same service as the web host in the value. */
+const WEB_HOST_ALIASES: Record<string, string> = {
+  "ssh.bitbucket.org": "bitbucket.org",
+  "ssh.github.com": "github.com",
+  "altssh.gitlab.com": "gitlab.com",
+};
+
+/**
+ * Web page of a git remote URL (`git@github.com:o/r.git`, `ssh://git@host:22/o/r`,
+ * `https://user@host/o/r.git`), or null for local paths.
+ */
+export function remoteWebUrl(url: string): string | null {
+  const u = url
+    .trim()
+    .replace(/\/+$/, "")
+    .replace(/\.git$/, "");
+  let host: string;
+  let path: string;
+  const scp = /^(?:[^@/]+@)?([^:/]+):(?!\/)(.+)$/.exec(u);
+  const full = /^(?:ssh|git|https?):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+)$/.exec(u);
+  if (full) [, host, path] = full as unknown as [string, string, string];
+  else if (scp) [, host, path] = scp as unknown as [string, string, string];
+  else return null;
+  host = WEB_HOST_ALIASES[host.toLowerCase()] ?? host;
+  return `https://${host}/${path.replace(/^\/+/, "")}`;
+}
+
+/** Commit page on the remote's web UI (Bitbucket uses `/commits/`). */
+export function commitWebUrl(remoteUrl: string, sha: string): string | null {
+  const base = remoteWebUrl(remoteUrl);
+  if (!base) return null;
+  return `${base}/${/bitbucket\.org\//.test(base) ? "commits" : "commit"}/${sha}`;
+}
+
+/** How a Git hosting service lays out its file pages. */
+export type HostingKind = "github" | "gitlab" | "bitbucket";
+
+/**
+ * The hosting service of a remote, by its host: GitHub (and GitHub Enterprise, Gitee, which share
+ * its URLs), Bitbucket, and GitLab for gitlab.* and any other host, as self-managed GitLab is the
+ * usual company server. Null for remotes with no web page (local paths).
+ */
+export function remoteHosting(url: string): { name: string; kind: HostingKind } | null {
+  const base = remoteWebUrl(url);
+  if (!base) return null;
+  const host = new URL(base).hostname.toLowerCase();
+  if (host === "github.com" || host.includes("github")) return { name: "GitHub", kind: "github" };
+  if (host === "gitee.com") return { name: "Gitee", kind: "github" };
+  if (host === "bitbucket.org") return { name: "Bitbucket", kind: "bitbucket" };
+  if (host.includes("gitlab")) return { name: "GitLab", kind: "gitlab" };
+  return { name: host, kind: "gitlab" };
+}
+
+/**
+ * Page of a file or directory at `revision` on the remote's web UI, with the 0-based `line`
+ * (through `endLine`, when later) selected. `relative` is the `/`-separated path inside the
+ * repository ("" for its root).
+ */
+export function fileWebUrl(
+  remoteUrl: string,
+  revision: string,
+  relative: string,
+  opts: { dir?: boolean; line?: number; endLine?: number } = {},
+): string | null {
+  const base = remoteWebUrl(remoteUrl);
+  const hosting = remoteHosting(remoteUrl);
+  if (!base || !hosting) return null;
+  const path = [...revision.split("/"), ...relative.split("/")].filter(Boolean).map(encodeURIComponent).join("/");
+  const line = opts.line !== undefined && !opts.dir ? opts.line + 1 : null;
+  const end = line && opts.endLine !== undefined && opts.endLine + 1 > line ? opts.endLine + 1 : null;
+  switch (hosting.kind) {
+    case "github":
+      return `${base}/${opts.dir ? "tree" : "blob"}/${path}${line ? `#L${line}${end ? `-L${end}` : ""}` : ""}`;
+    case "gitlab":
+      return `${base}/-/${opts.dir ? "tree" : "blob"}/${path}${line ? `#L${line}${end ? `-${end}` : ""}` : ""}`;
+    case "bitbucket":
+      return `${base}/src/${path}${line ? `#lines-${line}${end ? `:${end}` : ""}` : ""}`;
+  }
+}
+
+/** "N file(s)", worded for the locale. */ /** "N file(s)", worded for the locale. */
+export function fileCount(n: number): string {
+  return n === 1 ? tx`${n} file` : tx`${n} files`;
+}

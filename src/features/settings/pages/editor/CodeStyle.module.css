@@ -1,0 +1,26 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 760px;
+}
+
+.scheme {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.tabs {
+  margin: var(--space-2) 0 var(--space-2);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-ui);
+}
+
+.panel {
+  min-width: 0;
+  padding-bottom: var(--space-3);
+}

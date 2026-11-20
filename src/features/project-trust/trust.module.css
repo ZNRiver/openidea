@@ -1,0 +1,102 @@
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.content p {
+  margin: 0;
+}
+.promptContent {
+  composes: content;
+  gap: var(--space-2);
+}
+.promptContent > .pathLine {
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  color: var(--fg-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+}
+.restrictedPreview {
+  color: var(--fg-secondary);
+}
+.pathLine {
+  display: flex;
+  min-width: 0;
+  white-space: nowrap;
+}
+.pathHead {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pathTail {
+  flex: none;
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.folderOption {
+  align-items: flex-start;
+  width: 100%;
+}
+.folderLabel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  min-width: 0;
+}
+.folderPrefix {
+  overflow-wrap: anywhere;
+}
+.folderLabel > .pathLine {
+  color: var(--fg-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+}
+.trustDialog [data-dialog-footer] button {
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--h-button);
+  height: auto;
+  padding-block: var(--space-1);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  background: var(--bg-elev);
+  color: var(--fg);
+  border-bottom: 1px solid var(--border);
+}
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.sectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.content h3 {
+  margin: 0;
+}
+.content > h3,
+.sectionHead {
+  margin-top: var(--space-3);
+}
+.hint {
+  color: var(--fg-secondary);
+}
+.path {
+  overflow-wrap: anywhere;
+}

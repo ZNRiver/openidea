@@ -1,0 +1,551 @@
+/** Editor-side styling for LSP features (CodeMirror theme; tokens only). */
+import { EditorView } from "@codemirror/view";
+import { RAINBOW_COLORS } from "./semantic";
+
+const tooltipSurface = {
+  backgroundColor: "var(--bg-popup)",
+  border: "1px solid var(--border-popup)",
+  borderRadius: "var(--radius-popup)",
+  boxShadow: "var(--shadow-popup)",
+  color: "var(--fg)",
+};
+
+const completionInsets = { edge: 4, padding: 6, icon: 16, gap: 6 };
+export const completionLabelOffset =
+  1 + completionInsets.edge + completionInsets.padding + completionInsets.icon + completionInsets.gap;
+
+const completionRowMetrics = {
+  // Rows grow with the editor font size (lookup text uses the editor font, as typed text does).
+  "--cm-completion-row": "max(var(--h-list-row), calc(var(--openidea-editor-font-size, var(--fs-code)) * 1.7))",
+  "--cm-completion-edge": `${completionInsets.edge}px`,
+  "--cm-completion-inset": `${completionInsets.padding}px`,
+  "--cm-completion-icon": `${completionInsets.icon}px`,
+  "--cm-completion-gap": `${completionInsets.gap}px`,
+};
+
+const markdown = {
+  ".cm-lsp-markdown": {
+    fontFamily: "var(--font-ui)",
+    fontSize: "var(--fs-ui)",
+    lineHeight: "1.55",
+    color: "var(--fg-strong)",
+    overflowWrap: "anywhere",
+    whiteSpace: "normal",
+  },
+  ".cm-lsp-markdown > :first-child": { marginTop: "0" },
+  ".cm-lsp-markdown > :last-child": { marginBottom: "0" },
+  ".cm-lsp-markdown p, .cm-lsp-markdown ul, .cm-lsp-markdown ol": { margin: "6px 0" },
+  ".cm-lsp-markdown ul, .cm-lsp-markdown ol": { paddingLeft: "18px" },
+  ".cm-lsp-markdown h1, .cm-lsp-markdown h2, .cm-lsp-markdown h3, .cm-lsp-markdown h4": {
+    fontSize: "var(--fs-ui)",
+    fontWeight: "600",
+    color: "var(--fg-strong)",
+    margin: "8px 0 4px",
+  },
+  ".cm-lsp-markdown hr": { border: "none", borderTop: "1px solid var(--border-popup)", margin: "10px -14px" },
+  ".cm-lsp-markdown a": { color: "var(--link)", textDecoration: "none", cursor: "pointer" },
+  ".cm-lsp-markdown a:hover": { color: "var(--link-hover)", textDecoration: "underline" },
+  ".cm-lsp-markdown code": {
+    fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontWeight: "var(--fw-code, 400)",
+    fontSize: "var(--fs-small)",
+    color: "var(--fg-emphasis)",
+  },
+  ".cm-lsp-markdown pre, .cm-lsp-code": {
+    fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontWeight: "var(--fw-code, 400)",
+    fontSize: "var(--fs-ui)",
+    lineHeight: "1.5",
+    margin: "6px 0",
+    whiteSpace: "pre-wrap",
+    color: "var(--fg-emphasis)",
+  },
+  ".cm-lsp-markdown pre": {
+    backgroundColor: "var(--bg-popup-inline, var(--bg-elev))",
+    borderRadius: "var(--radius-small)",
+    padding: "6px 8px",
+  },
+  ".cm-lsp-markdown pre code": { fontSize: "inherit" },
+  ".cm-lsp-plain": { whiteSpace: "pre-wrap" },
+  ".cm-lsp-markdown table": { borderCollapse: "collapse" },
+  ".cm-lsp-markdown td, .cm-lsp-markdown th": { border: "1px solid var(--border-strong)", padding: "2px 6px" },
+  // Lezer classHighlighter tokens inside documentation code.
+  ".tok-keyword, .tok-modifier, .tok-controlKeyword, .tok-operatorKeyword": { color: "var(--syn-keyword)" },
+  ".tok-string, .tok-string2": { color: "var(--syn-string)" },
+  ".tok-number, .tok-bool, .tok-atom": { color: "var(--syn-number)" },
+  ".tok-typeName, .tok-className, .tok-namespace": { color: "var(--syn-type)" },
+  ".tok-comment": { color: "var(--syn-comment)", fontStyle: "italic" },
+  ".tok-meta, .tok-macroName": { color: "var(--syn-annotation)" },
+  ".tok-propertyName": { color: "var(--syn-property)" },
+  ".tok-variableName.tok-definition": { color: "var(--syn-function)" },
+  ".tok-punctuation, .tok-operator": { color: "var(--syn-punct)" },
+  ".tok-invalid": { color: "var(--syn-invalid)" },
+};
+
+function semanticStyle(token: string, fallback: string) {
+  return {
+    color: `var(--syn-${token}, var(--syn-${fallback}))`,
+    fontWeight: `var(--syn-${token}-bold, inherit)`,
+    fontStyle: `var(--syn-${token}-italic, inherit)`,
+    backgroundColor: `var(--syn-${token}-bg, transparent)`,
+    textDecoration: `var(--syn-${token}-effect, none)`,
+    WebkitTextDecoration: `var(--syn-${token}-effect, none)`,
+  };
+}
+
+export const lspTheme = EditorView.theme({
+  // --- completion (IDEA lookup: icon column, bold blue match, grey tail/type, advertiser) ---
+  ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion": {
+    ...tooltipSurface,
+    ...completionRowMetrics,
+    fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontWeight: "var(--fw-code, 400)",
+    fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
+    display: "flex",
+    flexDirection: "column",
+    width: "max-content",
+    maxWidth: "min(720px, var(--cm-completion-max-width, 100vw))",
+    // No overflow clipping: CodeMirror nests the documentation pane in this box and
+    // positions it outside it (see `positionCompletionInfo`). The footer rounds itself.
+  },
+  ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion > ul": {
+    fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontWeight: "var(--fw-code, 400)",
+    minWidth: "0",
+    maxWidth: "100%",
+    height: "auto",
+    maxHeight: "calc(var(--cm-completion-row) * 11 + 8px)",
+    padding: "4px 0",
+  },
+  ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion > ul > li": {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--cm-completion-gap)",
+    height: "var(--cm-completion-row)",
+    lineHeight: "var(--cm-completion-row)",
+    margin: "0 var(--cm-completion-edge)",
+    padding: "0 8px 0 var(--cm-completion-inset)",
+    borderRadius: "var(--radius-small)",
+    color: "var(--fg-editor, var(--fg-strong))",
+    whiteSpace: "nowrap",
+  },
+  ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion > ul > li[aria-selected]": {
+    backgroundColor: "var(--bg-list-selected, var(--bg-tree-selected, var(--bg-selected-strong)))",
+    color: "var(--fg-editor, var(--fg-strong))",
+  },
+  ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion > ul > completion-section": {
+    color: "var(--fg-subtle)",
+    fontFamily: "var(--font-ui)",
+    fontSize: "var(--fs-small)",
+    padding: "4px 12px 2px",
+    borderBottom: "none",
+  },
+  ".cm-lsp-completion .cm-lsp-kind": {
+    flex: "none",
+    width: "var(--cm-completion-icon)",
+    height: "var(--cm-completion-icon)",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ".cm-lsp-completion .cm-completionLabel": {
+    flex: "0 1 auto",
+    minWidth: "0",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+  ".cm-lsp-completion .cm-completionDetail": {
+    flex: "0 1 auto",
+    minWidth: "0",
+    marginLeft: "0",
+    fontStyle: "normal",
+    color: "var(--fg-subtle)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+  ".cm-lsp-completion .cm-completionMatchedText": {
+    textDecoration: "none",
+    fontWeight: "var(--fw-code-bold, 700)",
+    color: "var(--fg-completion-match, var(--link))",
+  },
+  // A server's label detail (`(a: string)`) hugs the name; template descriptions keep the gap.
+  ".cm-lsp-completion .cm-lsp-option .cm-completionDetail": {
+    marginLeft: "calc(-1 * var(--cm-completion-gap))",
+  },
+  ".cm-lsp-completion .cm-lsp-type": {
+    flex: "0 1 auto",
+    minWidth: "0",
+    maxWidth: "60%",
+    marginLeft: "auto",
+    paddingLeft: "16px",
+    textAlign: "right",
+    color: "var(--fg-subtle)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+  ".cm-lsp-completion .cm-lsp-keyword-option .cm-completionLabel": { fontWeight: "var(--fw-code-bold, 700)" },
+  ".cm-lsp-completion .cm-lsp-deprecated-option .cm-completionLabel": {
+    textDecoration: "line-through",
+    color: "var(--fg-muted)",
+  },
+  ".cm-lsp-completion-footer": {
+    display: "flex",
+    flex: "none",
+    flexWrap: "wrap",
+    alignItems: "center",
+    padding: "5px 12px",
+    backgroundColor: "var(--bg-popup-inline, var(--bg-elev))",
+    color: "var(--fg-subtle)",
+    fontFamily: "var(--font-ui)",
+    fontSize: "var(--fs-small)",
+    gap: "var(--space-1) var(--space-3)",
+    justifyContent: "space-between",
+    borderRadius: "0 0 calc(var(--radius-popup) - 1px) calc(var(--radius-popup) - 1px)",
+  },
+  ".cm-lsp-completion-sort": {
+    flex: "none",
+    maxWidth: "100%",
+    padding: "0",
+    border: "none",
+    background: "none",
+    color: "var(--fg-subtle)",
+    font: "inherit",
+    cursor: "pointer",
+  },
+  ".cm-lsp-completion-sort:hover": { color: "var(--fg)" },
+  '.cm-lsp-completion-sort[aria-pressed="true"]': { color: "var(--link)" },
+  ".cm-tooltip.cm-completionInfo": {
+    ...tooltipSurface,
+    padding: "8px 12px",
+    maxWidth: "440px",
+    maxHeight: "320px",
+    overflow: "auto",
+  },
+  ".cm-lsp-completion-doc": { whiteSpace: "normal" },
+  ".cm-lsp-doc-signature": { marginTop: "0", color: "var(--fg-emphasis)" },
+
+  // --- hover / quick documentation / signature / hints ---------------------
+  // Near the window edge CodeMirror caps the tooltip's height to the space left: its sections then
+  // shrink and scroll inside the popup instead of running past its border.
+  ".cm-tooltip.cm-tooltip-hover": { ...tooltipSurface, display: "flex", flexDirection: "column" },
+  ".cm-tooltip-hover > .cm-tooltip-section": { minHeight: 0, flexShrink: 1 },
+  ".cm-lsp-hover": {
+    maxWidth: "min(580px, var(--cm-diagnostic-hover-width, 580px))",
+    maxHeight: "380px",
+    overflow: "auto",
+    padding: "10px 14px",
+  },
+  // With documentation the doc view pads its own body and keeps its toolbar at the bottom.
+  ".cm-lsp-hover.cm-lsp-hover-doc": { padding: "0" },
+  ".cm-lsp-hover-doc > .cm-lsp-hover-diagnostics": {
+    padding: "10px 14px",
+    borderBottom: "1px solid var(--border-popup)",
+  },
+  ".cm-lsp-diag": {
+    display: "grid",
+    gridTemplateColumns: "16px minmax(0, 1fr)",
+    columnGap: "var(--space-2)",
+    rowGap: "var(--space-1)",
+    fontFamily: "var(--font-ui)",
+    fontSize: "var(--fs-ui)",
+    lineHeight: "1.4",
+  },
+  ".cm-lsp-diag-icon": { display: "inline-flex", marginTop: "1px", alignSelf: "start" },
+  ".cm-lsp-diag + .cm-lsp-diag": {
+    marginTop: "var(--space-2)",
+    paddingTop: "var(--space-2)",
+    borderTop: "1px solid var(--border-popup)",
+  },
+  ".cm-lsp-diag-error .cm-lsp-diag-icon": { color: "var(--danger)" },
+  ".cm-lsp-diag-warning .cm-lsp-diag-icon": { color: "var(--warning)" },
+  ".cm-lsp-diag-info .cm-lsp-diag-icon, .cm-lsp-diag-hint .cm-lsp-diag-icon": { color: "var(--info)" },
+  ".cm-lsp-diag-message": { color: "var(--fg-strong)", whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
+  ".cm-lsp-diag-actions": {
+    gridColumn: "2",
+    display: "flex",
+    flexWrap: "wrap",
+    columnGap: "var(--space-3)",
+    rowGap: "var(--space-0-5)",
+    alignItems: "baseline",
+  },
+  ".cm-lsp-diag-source": {
+    gridColumn: "2",
+    color: "var(--fg-subtle)",
+    fontSize: "var(--fs-small)",
+    overflowWrap: "anywhere",
+  },
+  ".cm-lsp-link-button": {
+    display: "inline-flex",
+    flexWrap: "wrap",
+    alignItems: "baseline",
+    columnGap: "var(--space-1)",
+    minWidth: 0,
+    maxWidth: "100%",
+    border: "none",
+    background: "none",
+    padding: "0",
+    font: "inherit",
+    color: "var(--link)",
+    cursor: "pointer",
+    textAlign: "left",
+    whiteSpace: "normal",
+  },
+  ".cm-lsp-diag-action-label": { minWidth: 0, overflowWrap: "anywhere" },
+  ".cm-lsp-diag-shortcut": { color: "var(--fg-subtle)", fontSize: "var(--fs-small)", whiteSpace: "nowrap" },
+  ".cm-lsp-link-button:hover .cm-lsp-diag-action-label": { color: "var(--link-hover)", textDecoration: "underline" },
+  ".cm-tooltip.cm-lsp-signature": {
+    fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontWeight: "var(--fw-code, 400)",
+    fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
+    maxWidth: "min(640px, var(--cm-signature-width, 100%))",
+    maxHeight: "min(380px, 65vh)",
+    paddingBlock: "var(--space-0-5)",
+    overflow: "auto",
+    overscrollBehavior: "contain",
+  },
+  ".cm-lsp-signature-row": {
+    color: "var(--fg-secondary)",
+    whiteSpace: "pre-wrap",
+    overflowWrap: "anywhere",
+    lineHeight: "1.5",
+    padding: "var(--space-0-5) var(--space-2)",
+    paddingInlineStart: "calc(var(--space-2) + 2ch)",
+    textIndent: "-2ch",
+  },
+  ".cm-lsp-signature-active": {
+    color: "var(--fg-strong)",
+    backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--accent) 14%, transparent))",
+  },
+  ".cm-lsp-signature-disabled": { opacity: "0.55" },
+  ".cm-lsp-signature b": { fontWeight: "var(--fw-code-bold, 700)", color: "var(--fg-strong)" },
+  ".cm-lsp-signature-doc": {
+    borderTop: "1px solid var(--border-popup)",
+    marginTop: "var(--space-1)",
+    padding: "var(--space-2)",
+  },
+  ".cm-tooltip:has(> .cm-lsp-hint)": { background: "none", border: "none", boxShadow: "none" },
+  ".cm-lsp-hint": {
+    backgroundColor: "var(--bg-popup)",
+    color: "var(--fg-strong)",
+    border: "1px solid var(--border-popup)",
+    fontFamily: "var(--font-ui)",
+    fontSize: "var(--fs-ui)",
+    padding: "6px 10px",
+    borderRadius: "var(--radius-popup)",
+    boxShadow: "var(--shadow-popup)",
+    whiteSpace: "pre-wrap",
+  },
+  ".cm-lsp-hint-spinner": { display: "inline-flex", verticalAlign: "-2px", marginRight: "var(--space-2)" },
+  // The hint is the tooltip element itself: beat the editor theme's `.cm-tooltip` width.
+  ".cm-tooltip.cm-lsp-hint": { maxWidth: "min(480px, 100%)" },
+  ".cm-lsp-hint-error": {
+    backgroundColor: "var(--bg-feedback-error, color-mix(in srgb, var(--danger) 8%, var(--bg-popup)))",
+    borderColor: "color-mix(in srgb, var(--danger) 35%, var(--border-popup))",
+  },
+  ".cm-lsp-hint-warning": {
+    backgroundColor: "var(--bg-feedback-warning, color-mix(in srgb, var(--warning) 9%, var(--bg-popup)))",
+    borderColor: "color-mix(in srgb, var(--warning) 35%, var(--border-popup))",
+  },
+
+  // --- navigation ---------------------------------------------------------
+  ".cm-lsp-link": {
+    color: "var(--link)",
+    WebkitTextFillColor: "currentcolor",
+    textDecoration: "underline",
+    textUnderlineOffset: "2px",
+    cursor: "pointer",
+  },
+  ".cm-lsp-occurrence, .cm-lsp-occurrence-tail": {
+    "--lsp-occurrence-bg": "var(--bg-identifier-under-caret, color-mix(in srgb, var(--accent) 14%, transparent))",
+  },
+  ".cm-lsp-occurrence-write, .cm-lsp-occurrence-tail-write": {
+    "--lsp-occurrence-bg": "var(--bg-identifier-under-caret-write, color-mix(in srgb, var(--danger) 12%, transparent))",
+  },
+  ".cm-lsp-occurrence": { backgroundColor: "var(--lsp-occurrence-bg)" },
+  // Text fill, not `color`: it reaches the syntax and semantic spans nested inside, and with the
+  // variable unset the declaration drops, so they keep their own colours.
+  "span.cm-lsp-occurrence, .cm-lsp-occurrence-text": { WebkitTextFillColor: "var(--fg-identifier-under-caret)" },
+  "span.cm-lsp-occurrence-write, .cm-lsp-occurrence-text-write": {
+    WebkitTextFillColor: "var(--fg-identifier-under-caret-write)",
+  },
+  // First line of a highlight over several lines: from its start column to the right edge,
+  // over the line's own background (the caret row's).
+  ".cm-lsp-occurrence-tail": {
+    backgroundImage:
+      "linear-gradient(to right, transparent var(--lsp-occurrence-from), var(--lsp-occurrence-bg) var(--lsp-occurrence-from))",
+  },
+  // IDEA's ⌘-hover hint: a rounded popup pointing at the word. Styled here in full, as diff
+  // viewers lack the editor theme and would show CodeMirror's default tooltip. A few lines at
+  // most, so no scrolling, which would clip the arrow.
+  ".cm-tooltip.cm-lsp-nav-info": {
+    ...tooltipSurface,
+    borderRadius: "var(--radius-popup-large)",
+    width: "max-content",
+    maxWidth: "100%",
+    maxHeight: "none",
+    overflow: "visible",
+  },
+  ".cm-lsp-nav-info .cm-lsp-code": { overflowWrap: "anywhere" },
+  ".cm-tooltip.cm-lsp-nav-info .cm-tooltip-arrow:before": {
+    borderTopColor: "var(--border-popup)",
+    borderBottomColor: "var(--border-popup)",
+  },
+  ".cm-tooltip.cm-lsp-nav-info .cm-tooltip-arrow:after": {
+    borderTopColor: "var(--bg-popup)",
+    borderBottomColor: "var(--bg-popup)",
+  },
+  // Chooser highlight (tempHighlight.ts): the expression / occurrences a choice would take.
+  ".cm-lsp-chooser-highlight": { backgroundColor: "var(--bg-text-search-result)" },
+
+  // --- in-place rename (inplaceRename.ts) ------------------------------------
+  ".cm-lsp-inplace": {
+    backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--accent) 14%, transparent))",
+  },
+  ".cm-lsp-inplace-primary": {
+    outline: "1px solid var(--focus-ring)",
+    outlineOffset: "-1px",
+    borderRadius: "2px",
+  },
+  ".cm-lsp-inplace-hint": { color: "var(--fg-secondary)", fontSize: "var(--fs-small)", padding: "3px 8px" },
+  ".cm-lsp-inplace-suggestions": {
+    listStyle: "none",
+    margin: "0 -8px 4px",
+    padding: "0",
+    fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontWeight: "var(--fw-code, 400)",
+    fontSize: "var(--fs-ui)",
+    color: "var(--fg)",
+  },
+  ".cm-lsp-inplace-suggestions li": { padding: "1px 8px", cursor: "pointer" },
+  ".cm-lsp-inplace-suggestions li:hover": { backgroundColor: "var(--bg-hover)" },
+  ".cm-lsp-inplace-suggestion-active": { backgroundColor: "var(--bg-selected)" },
+
+  // --- floating lightbulb (intentions.ts) -----------------------------------
+  ".cm-lsp-bulb": {
+    position: "absolute",
+    zIndex: "2",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: "18px",
+    color: "var(--fg-bulb, var(--warning))",
+    cursor: "pointer",
+  },
+  // Above the sticky gutters (z-index 200).
+  ".cm-lsp-bulb-gutter": { zIndex: "201", backgroundColor: "var(--bg-editor-gutter, var(--bg-editor))" },
+  ".cm-lsp-bulb .cm-openidea-icon": { display: "inline-flex", borderRadius: "var(--radius-small)", padding: "1px" },
+  ".cm-lsp-bulb:hover .cm-openidea-icon": { backgroundColor: "var(--bg-toolbar-hover)" },
+  ".cm-lsp-bulb .cm-lsp-bulb-fix-icon, .cm-lsp-bulb-fix .cm-openidea-icon:first-child": { display: "none" },
+  ".cm-lsp-bulb-fix .cm-lsp-bulb-fix-icon": { display: "inline-flex" },
+
+  // --- inlay hints (rounded grey chips) -------------------------------------
+  ".cm-lsp-inlay": {
+    color: "var(--fg-inlay, var(--syn-inline-value))",
+    backgroundColor: "var(--bg-inlay, color-mix(in srgb, var(--fg-subtle) 12%, transparent))",
+    borderRadius: "var(--radius-small)",
+    padding: "0 4px",
+    fontSize: "0.9em",
+    fontFamily: "var(--font-ui)",
+    verticalAlign: "1px",
+    WebkitUserSelect: "none",
+    userSelect: "none",
+  },
+  // A part naming a declaration (⌘-click navigates there).
+  ".cm-lsp-navigation-modifier .cm-lsp-inlay-part:hover": {
+    textDecoration: "underline",
+    textUnderlineOffset: "2px",
+    cursor: "pointer",
+  },
+  // Inline completion: the suggestion as gray text at the caret.
+  ".cm-inline-ghost": { color: "var(--fg-subtle)", whiteSpace: "pre" },
+  ".cm-lsp-inlay-pl": { marginLeft: "4px" },
+  ".cm-lsp-inlay-pr": { marginRight: "4px" },
+
+  ".cm-sem-python-method-call": semanticStyle("python-method-call", "function-call"),
+  ".cm-sem-python-annotation": semanticStyle("python-annotation", "type"),
+  ".cm-sem-python-parentheses": semanticStyle("python-parentheses", "punct"),
+  ".cm-sem-python-brackets": semanticStyle("python-brackets", "punct"),
+  ".cm-sem-python-braces": semanticStyle("python-braces", "punct"),
+  ".cm-sem-python-definition": semanticStyle("function", "function"),
+  ".cm-sem-python-nested": semanticStyle("python-nested-function", "function"),
+  ".cm-sem-python-predefined-definition": semanticStyle("python-predefined-definition", "predefined"),
+  ".cm-sem-python-predefined-usage": semanticStyle("python-predefined-usage", "predefined"),
+  ".cm-sem-python-docstring, .cm-sem-python-docstring *": semanticStyle("docstring", "string"),
+  // After the docstring wildcard above so the tag's own colour wins inside it.
+  ".cm-sem-python-docstring-tag": {
+    ...semanticStyle("python-docstring-tag", "doc-comment-tag"),
+    textDecoration: "var(--syn-python-docstring-tag-effect, var(--syn-doc-comment-tag-effect, none))",
+    WebkitTextDecoration: "var(--syn-python-docstring-tag-effect, var(--syn-doc-comment-tag-effect, none))",
+  },
+  ".cm-sem-python-docstring-keyword": semanticStyle("python-docstring-keyword", "doc-comment-tag-value"),
+  ".cm-sem-python-bytes": semanticStyle("python-bytes", "string"),
+  ".cm-sem-python-fstring, .cm-sem-python-fstring .tok-string, .cm-sem-python-fstring .tok-string2": semanticStyle(
+    "python-fstring",
+    "string",
+  ),
+  ".cm-sem-python-escape": semanticStyle("escape", "escape"),
+  ".cm-sem-python-format": semanticStyle("python-format", "escape"),
+  ".cm-sem-python-keyword-arg": semanticStyle("keyword-arg", "param"),
+  // --- semantic tokens -----------------------------------------------------
+  ".cm-sem-type, .cm-sem-typeParameter": semanticStyle("type", "type"),
+  // IDEA colours declarations, calls stay (nearly) plain text.
+  ".cm-sem-function": semanticStyle("function-call", "function"),
+  // Keep role selectors at one class so static/deprecated modifiers can override their styles.
+  ".cm-sem-function:where(.cm-sem-declaration)": semanticStyle("function", "function"),
+  ".cm-sem-function:where(.cm-sem-builtin)": semanticStyle("builtin", "function"),
+  ".cm-sem-function.cm-sem-python-method-call": semanticStyle("python-method-call", "function-call"),
+  ".cm-sem-macro": semanticStyle("annotation", "annotation"),
+  ".cm-sem-annotation": semanticStyle("decorator", "annotation"),
+  ".cm-sem-namespace": semanticStyle("namespace", "type"),
+  ".cm-sem-constant": { ...semanticStyle("constant", "constant"), fontStyle: "var(--syn-constant-italic, italic)" },
+  ".cm-sem-variable": semanticStyle("variable", "variable"),
+  ".cm-sem-property": semanticStyle("property", "property"),
+  ".cm-sem-parameter": semanticStyle("param", "variable"),
+  ".cm-sem-parameter.cm-sem-unused": { color: "var(--fg-unused, var(--fg-faint))" },
+  ".cm-sem-self": semanticStyle("self", "keyword"),
+  ".cm-sem-keyword": semanticStyle("keyword", "keyword"),
+  // Before the builtin rule: library globals (`print`, `string`) keep the predefined colour.
+  ".cm-sem-global:where(:not(.cm-sem-function))": semanticStyle("global", "variable"),
+  ".cm-sem-builtin:where(:not(.cm-sem-function))": semanticStyle("builtin", "variable"),
+  ".cm-sem-builtin.cm-sem-python-builtin": semanticStyle("python-builtin", "builtin"),
+  ".cm-sem-static": { fontStyle: "var(--syn-static-italic, italic)" },
+  ".cm-sem-property.cm-sem-static, .cm-sem-property.cm-sem-static *": {
+    color: "var(--syn-static-property, var(--syn-property))",
+    fontStyle: "var(--syn-static-property-italic, var(--syn-static-italic, italic))",
+    fontWeight: "var(--syn-static-property-bold, var(--syn-property-bold, inherit))",
+    backgroundColor: "var(--syn-static-property-bg, transparent)",
+    textDecoration: "var(--syn-static-property-effect, none)",
+    WebkitTextDecoration: "var(--syn-static-property-effect, none)",
+  },
+  ".cm-sem-python-static": { fontStyle: "var(--syn-python-static-italic, normal)" },
+  ".cm-sem-mutable": {
+    textDecoration: "underline",
+    textDecorationColor: "var(--fg-faint)",
+    textUnderlineOffset: "3px",
+  },
+  ".cm-sem-python-local-variable": semanticStyle("python-local-variable", "variable"),
+  ".cm-sem-global.cm-sem-python-global-variable": semanticStyle("python-global-variable", "global"),
+  ".cm-sem-python-instance-attribute": semanticStyle("python-instance-attribute", "property"),
+  ".cm-sem-python-class-attribute": semanticStyle("python-class-attribute", "property"),
+  ".cm-sem-python-constant": semanticStyle("python-constant", "constant"),
+  ".cm-sem-python-property": semanticStyle("python-property", "property"),
+  ".cm-sem-python-type-parameter": semanticStyle("python-type-parameter", "type"),
+  // Deprecation wins over role effects, including static fields.
+  ".cm-content .cm-sem-deprecated, .cm-content .cm-sem-deprecated *": { textDecoration: "line-through" },
+  // Semantic highlighting: after the base classes so a parameter's colour gives way, and over the
+  // syntax highlighter's span inside.
+  ...Object.fromEntries(
+    Array.from({ length: RAINBOW_COLORS }, (_, i) => [
+      `.cm-sem-rainbow-${i + 1}, .cm-sem-rainbow-${i + 1} *`,
+      {
+        color: `var(--syn-rainbow-${i + 1})`,
+        fontWeight: `var(--syn-rainbow-${i + 1}-bold, inherit)`,
+        fontStyle: `var(--syn-rainbow-${i + 1}-italic, inherit)`,
+      },
+    ]),
+  ),
+  // After the semantic classes: the link wraps their (innermost) spans, and its colour must win.
+  ".cm-lsp-link *": { color: "var(--link)" },
+
+  ...markdown,
+});

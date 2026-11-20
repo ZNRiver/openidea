@@ -1,0 +1,241 @@
+import { act, render, screen, waitFor, cleanup } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { executeAction, registerAction } from "@/platform/actions";
+import { setContext } from "@/platform/context";
+import { useProject } from "@/platform/project";
+import { useEditorRegistry } from "@/editor/api";
+import type { ProjectInfo, Sdk } from "@/bindings";
+
+const mocks = vi.hoisted(() => ({
+  notify: vi.fn(),
+  files: vi.fn(),
+  effective: vi.fn(),
+  detect: vi.fn(),
+  set: vi.fn(),
+  component: null as React.ComponentType | null,
+}));
+vi.mock("@/platform/ipc", () => ({
+  call: (p: unknown) => p,
+  isTauri: () => true,
+  onIdeEvent: () => () => {},
+  commands: {
+    findFiles: mocks.files,
+    sdkPythonEffective: mocks.effective,
+    sdkDetect: mocks.detect,
+    settingsSet: mocks.set,
+  },
+}));
+vi.mock("@/workbench/contributions", () => ({
+  notifications: () => ({ notify: mocks.notify }),
+  registerStatusItem: (item: { component: React.ComponentType }) => {
+    mocks.component = item.component;
+    return () => {};
+  },
+}));
+import { isStatusWidgetAvailable } from "@/workbench/statusBarWidgets";
+import { activatePythonStatus, interpreterChoices, isPythonPath, nearMember } from "../languages/PythonStatus";
+import { rememberSdk, useSdks } from "../languages/api";
+
+let dispose: () => void;
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.files.mockResolvedValue([]);
+  mocks.effective.mockResolvedValue(null);
+  mocks.detect.mockResolvedValue([]);
+  mocks.set.mockResolvedValue({ languages: { python: { interpreter: "/new/python" } } });
+  useProject.setState({ project: { root: "/project" } as ProjectInfo, settings: null });
+  useEditorRegistry.setState({ active: null });
+  setContext("projectOpen", true);
+  dispose = activatePythonStatus();
+});
+afterEach(() => {
+  cleanup();
+  dispose();
+  useSdks.setState({ byKind: {} });
+});
+
+const mount = () => {
+  const Component = mocks.component!;
+  return render(<Component />);
+};
+
+describe("Python interpreter status", () => {
+  it.each([
+    "src/main.py",
+    "types/lib.pyi",
+    "C:\\app\\main.pyw",
+    "pyproject.toml",
+    "requirements-dev.txt",
+    "SConstruct",
+  ])("recognizes %s", (path) => expect(isPythonPath(path)).toBe(true));
+  it.each(["main.ts", "python.md", "pyproject.toml.bak", "copy.py.json"])("rejects %s", (path) =>
+    expect(isPythonPath(path)).toBe(false),
+  );
+  it.each([
+    [["/project", "/project/member"], "/project/src/main.py", "/project/src"],
+    [["/project", "/project/member"], "/project/main.py", "/project"],
+    [["C:\\project", "C:\\attached"], "C:\\attached\\src\\main.py", "C:/attached/src"],
+    [["C:\\project", "C:\\project\\member"], "C:\\project\\member\\src\\main.py", "C:/project/member/src"],
+    [["/project"], "/other/main.py", null],
+    [["/project"], null, null],
+    [undefined, "/project/main.py", null],
+  ])("asks about the active file's member: nearMember(%j, %s) = %s", (projects, file, near) =>
+    expect(nearMember(projects, file)).toBe(near),
+  );
+  it("resolves the interpreter for the active file's workspace member", async () => {
+    useProject.setState({
+      project: {
+        root: "/project",
+        workspace: { version: 1, name: "W", projects: ["/project", "/project/member"] },
+      } as ProjectInfo,
+    });
+    useEditorRegistry.setState({ active: { ctx: { path: "/project/member/src/main.py" } } } as never);
+    mocks.files.mockResolvedValue([{ path: "/project/member/src/main.py" }]);
+    mocks.effective.mockResolvedValue("/member/venv/python");
+    mocks.detect.mockResolvedValue([{ path: "/member/venv/python", name: "Python 3.12 (member)" }]);
+    mount();
+    await screen.findByRole("button", { name: "Python Interpreter: Python 3.12 (member)" });
+    expect(mocks.effective).toHaveBeenCalledWith("/project/member/src");
+  });
+  it("resolves the interpreter for an attached member outside the project root", async () => {
+    useProject.setState({
+      project: {
+        root: "/project",
+        workspace: { version: 1, name: "W", projects: ["/project", "/attached"] },
+      } as ProjectInfo,
+    });
+    useEditorRegistry.setState({ active: { ctx: { path: "/attached/trainer.py" } } } as never);
+    mocks.files.mockResolvedValue([{ path: "/attached/trainer.py" }]);
+    mocks.effective.mockResolvedValue("/primary/venv/python");
+    mocks.detect.mockResolvedValue([{ path: "/primary/venv/python", name: "Python 3.14 (primary)" }]);
+    mount();
+    await screen.findByRole("button", { name: "Python Interpreter: Python 3.14 (primary)" });
+    expect(mocks.effective).toHaveBeenCalledWith("/attached");
+  });
+  it("keeps custom interpreters and deduplicates detected paths", () => {
+    const sdk = { path: "/python", name: "Python 3.12" } as Sdk;
+    expect(interpreterChoices([sdk, sdk], "/custom")).toEqual([sdk, { path: "/custom", name: "/custom" }]);
+  });
+  it("hides for non-Python projects without probing SDKs", async () => {
+    mount();
+    await waitFor(() => expect(mocks.files).toHaveBeenCalled());
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(mocks.detect).not.toHaveBeenCalled();
+    await waitFor(() => expect(isStatusWidgetAvailable("python.interpreter")).toBe(false));
+  });
+  it("shows a warning for Python files without an interpreter", async () => {
+    mocks.files.mockResolvedValue([{ path: "/project/src/main.py" }]);
+    mount();
+    expect(await screen.findByText("No interpreter")).toBeTruthy();
+    const button = screen.getByRole("button", { name: "Python Interpreter: No interpreter" });
+    expect(button.querySelector("svg")).toBeTruthy();
+  });
+  it("shows the paths of interpreters that share a name", async () => {
+    mocks.files.mockResolvedValue([{ path: "/project/main.py" }]);
+    mocks.effective.mockResolvedValue("/usr/local/bin/python3.11");
+    mocks.detect.mockResolvedValue([
+      { path: "/usr/local/bin/python3.11", name: "Python 3.11" },
+      { path: "/opt/homebrew/bin/python3.11", name: "Python 3.11" },
+      { path: "/venv/bin/python", name: "Python 3.12 (.venv)" },
+    ]);
+    mount();
+    await screen.findByRole("button", { name: "Python Interpreter: Python 3.11" });
+    await act(() => executeAction("python.interpreterPopup"));
+    expect(await screen.findByText("/opt/homebrew/bin/python3.11")).toBeTruthy();
+    expect(screen.getByText("/usr/local/bin/python3.11")).toBeTruthy();
+    expect(screen.queryByText("/venv/bin/python")).toBeNull();
+  });
+  it("shows a run target interpreter by name and offers container targets", async () => {
+    mocks.files.mockResolvedValue([{ path: "/project/manage.py" }]);
+    mocks.detect.mockResolvedValue([{ path: "/venv/python", name: "Python 3.12 (.venv)" }]);
+    const runTargets = [
+      { kind: "compose", id: "web", name: "Compose web", service: "web" },
+      { kind: "docker", id: "img", name: "Image", image: "python:3.12" },
+      { kind: "ssh", id: "box", name: "Build box" },
+    ];
+    useProject.setState({
+      settings: { languages: { python: { interpreter: "target:web" } }, runTargets } as never,
+    });
+    mount();
+    const button = await screen.findByRole("button", { name: "Python Interpreter: Compose web" });
+    expect(button.querySelector("svg")).toBeNull();
+    await act(() => executeAction("python.interpreterPopup"));
+    expect(await screen.findByText("Docker Compose service web")).toBeTruthy();
+    expect(screen.getByText("Image")).toBeTruthy();
+    expect(screen.queryByText("Build box")).toBeNull();
+    await act(async () => screen.getByText("Image").click());
+    expect(mocks.set).toHaveBeenCalledWith("project", "languages.python.interpreter", JSON.stringify("target:img"));
+  });
+  it("opens the Python page when the widget is hidden", async () => {
+    const run = vi.fn();
+    const off = registerAction({ id: "file.settings", title: "Settings…", run });
+    mount();
+    await waitFor(() => expect(mocks.files).toHaveBeenCalled());
+    await executeAction("python.interpreterPopup");
+    expect(run.mock.calls.map(([ctx]) => ctx.arg)).toEqual(["python.interpreter"]);
+    off();
+  });
+  it("shows the effective SDK name and hides old state on project change", async () => {
+    mocks.files.mockResolvedValue([{ path: "/project/pyproject.toml" }]);
+    mocks.effective.mockResolvedValue("/venv/python");
+    mocks.detect.mockResolvedValue([{ path: "/venv/python", name: "Python 3.12 (.venv)" }]);
+    mount();
+    expect(await screen.findByText("Python 3.12 (.venv)")).toBeTruthy();
+    mocks.files.mockResolvedValue([]);
+    act(() => useProject.setState({ project: { root: "/other" } as ProjectInfo }));
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+  it("writes the project setting through the same backend path as Settings", async () => {
+    await executeAction("python.selectInterpreter", "/new/python");
+    expect(mocks.set).toHaveBeenCalledWith("project", "languages.python.interpreter", '"/new/python"');
+    expect(useProject.getState().settings?.languages?.python?.interpreter).toBe("/new/python");
+  });
+  it("reports write failures without changing the selected interpreter", async () => {
+    mocks.set.mockRejectedValueOnce(new Error("write failed"));
+    await executeAction("python.selectInterpreter", "/new/python");
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ level: "error" }));
+    expect(useProject.getState().settings).toBeNull();
+  });
+  it("discards discovery completing after a project switch", async () => {
+    mocks.files.mockResolvedValue([{ path: "/project/main.py" }]);
+    let finish!: (sdks: Sdk[]) => void;
+    mocks.detect.mockReturnValueOnce(
+      new Promise<Sdk[]>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    mocks.effective.mockResolvedValue("/old/python");
+    mount();
+    await waitFor(() => expect(mocks.detect).toHaveBeenCalled());
+    mocks.files.mockResolvedValue([]);
+    act(() => useProject.setState({ project: { root: "/other" } as ProjectInfo }));
+    await act(async () => finish([{ path: "/old/python", name: "Python 3.12" } as Sdk]));
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+  it("picks up an environment created outside the project", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const python = "C:\\Users\\me\\miniconda3\\envs\\demo\\python.exe";
+      useProject.setState({ settings: { languages: { python: { interpreter: python } } } as never });
+      mocks.files.mockResolvedValue([{ path: "/project/main.py" }]);
+      mount();
+      await screen.findByRole("button", { name: "Python Interpreter: Invalid interpreter" });
+      // conda creates the environment in its envs directory, the configured path stays the same.
+      mocks.effective.mockResolvedValue(python);
+      act(() => rememberSdk("python", { path: python, name: "Python 3.12 (demo)", source: "conda" } as Sdk));
+      await act(() => vi.advanceTimersByTimeAsync(400));
+      await screen.findByRole("button", { name: "Python Interpreter: Python 3.12 (demo)" });
+      expect(mocks.detect).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("opens the Python page for both settings entries", async () => {
+    const run = vi.fn();
+    const off = registerAction({ id: "file.settings", title: "Settings…", run });
+    await executeAction("python.addInterpreter");
+    await executeAction("python.interpreterSettings");
+    expect(run.mock.calls.map(([ctx]) => ctx.arg)).toEqual(["python.interpreter", "python.interpreter"]);
+    off();
+  });
+});

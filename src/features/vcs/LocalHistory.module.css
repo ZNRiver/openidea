@@ -1,0 +1,81 @@
+.root {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  background: var(--bg-app);
+}
+.resizable {
+  min-width: 0;
+}
+.header {
+  flex: none;
+  height: var(--h-header);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-2) 0 var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+.title {
+  flex: 1;
+  color: var(--fg-emphasis);
+  font-weight: 500;
+}
+.resizable .title {
+  min-width: 0;
+  font-size: var(--fs-ui);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.list {
+  flex: 1;
+}
+.entry {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: var(--space-0-5);
+}
+.resizable .entry {
+  width: 100%;
+  line-height: 1.2;
+}
+.primaryRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  color: var(--fg-strong);
+  font-size: var(--fs-ui);
+}
+.primary,
+.meta,
+.path,
+.deletedPath {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.meta,
+.path,
+.deletedPath {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.meta {
+  font-variant-numeric: tabular-nums;
+}
+.deletedPath {
+  text-decoration: line-through;
+}
+.message {
+  padding: var(--space-4);
+  color: var(--fg-faint);
+  text-align: center;
+}
+.resizable .message {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

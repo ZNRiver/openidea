@@ -1,0 +1,287 @@
+/** Menus of the Database tool window, laid out like IDEA's (New ▸, Copy/Paste ▸, SQL Scripts ▸ …). */
+import type { MenuItem } from "@/ui";
+import { notifications } from "@/workbench/contributions";
+import { fileSourceName, parseSourceUrl } from "./model";
+import { VENDORS, vendorPreset } from "./vendors";
+import { nodeTarget, objectOf, tableOf, type DbNode } from "./nodes";
+import { SCRIPT_LABELS, canDrop, canModifyTable, canRename, type ScriptKind } from "./objects";
+import {
+  connectedTargets,
+  createsDatabases,
+  newSchemaTarget,
+  openDialog,
+  openSourceDialog,
+  sourceById,
+  useDatabase,
+} from "./store";
+import { readClipboardPlainText } from "@/platform/clipboard";
+import { useRemote } from "@/platform/remote";
+import { dumpScope, mysqlDumpScope } from "./dumpTools";
+
+const act = (
+  action: string,
+  node: DbNode | null,
+  extra: Partial<{ label: string; disabled: boolean; icon: string }> = {},
+): MenuItem => ({
+  kind: "action",
+  action,
+  arg: node ?? undefined,
+  ...extra,
+});
+
+const sep: MenuItem = { kind: "separator" };
+
+async function sqliteFromFile() {
+  const { open } = await import("@/platform/dialog");
+  const file = await open({ multiple: false, directory: false, title: "SQLite Database File" });
+  if (typeof file === "string") openSourceDialog(null, { driver: "sqlite", file, name: fileSourceName(file) });
+}
+
+/** New ▸ Data Source ▸ — the drivers the backend speaks and wire-compatible products, A–Z like IDEA's. */
+function dataSourceItems(): MenuItem[] {
+  return [
+    {
+      label: "Data Source",
+      icon: "database",
+      submenu: VENDORS.map((v) => ({
+        label: v.label,
+        icon: v.icon,
+        run: () => openSourceDialog(null, vendorPreset(v)),
+      })),
+    },
+    { label: "Data Source from File…", icon: "folder", run: () => void sqliteFromFile() },
+    { label: "Data Source from URL…", icon: "external-link", run: () => openDialog({ kind: "sourceUrl" }) },
+    { label: "Import from Clipboard", icon: "paste", run: () => void sourceFromClipboard() },
+  ];
+}
+
+/** New ▸ Import from Clipboard: a connection URL (JDBC or native) on the clipboard becomes a new data source. */
+async function sourceFromClipboard() {
+  let text = "";
+  try {
+    text = await readClipboardPlainText();
+  } catch {
+    // Unreadable clipboard: reported below like an unknown one.
+  }
+  const parsed = text.trim() ? parseSourceUrl(text.trim()) : null;
+  if (parsed) openSourceDialog(null, parsed.source, parsed.password);
+  else
+    notifications().notify({
+      level: "info",
+      title: "No data source on the clipboard",
+      body: "Copy a connection URL such as postgresql://user@host:5432/db or jdbc:sqlite:/path/app.db.",
+      key: "db-clipboard",
+    });
+}
+
+/** The toolbar's "+" menu (IDEA: New). */
+export function newMenu(): MenuItem[] {
+  return [{ kind: "action", action: "db.newConsole", label: "Query Console" }, sep, ...dataSourceItems()];
+}
+
+function sqlScripts(n: DbNode, table: boolean): MenuItem {
+  const scripts: MenuItem[] = table
+    ? (Object.keys(SCRIPT_LABELS) as ScriptKind[]).map((kind) => ({
+        kind: "action",
+        action: "db.sqlScript",
+        arg: { node: n, kind },
+        label: SCRIPT_LABELS[kind],
+      }))
+    : [act("db.runSqlScript", n)];
+  return { label: "SQL Scripts", submenu: [act("db.ddlToClipboard", n), act("db.ddlToConsole", n), sep, ...scripts] };
+}
+
+/** Export / Restore with the client tools of a PostgreSQL or MySQL node; they run on this machine, so not in remote windows. */
+function dumpItems(n: DbNode, restore: boolean): MenuItem[] {
+  const source = sourceById(nodeTarget(n));
+  if (useRemote.getState().session) return [];
+  const [dump, load] = dumpScope(n, source)
+    ? ["db.dumpWithPgDump", "db.restoreWithPgRestore"]
+    : mysqlDumpScope(n, source)
+      ? ["db.dumpWithMysqldump", "db.restoreWithMysql"]
+      : [];
+  if (!dump || !load) return [];
+  return [act(dump, n), ...(restore ? [act(load, n, { disabled: !!source?.readOnly })] : [])];
+}
+
+function importExport(items: MenuItem[]): MenuItem[] {
+  return items.length ? [{ label: "Import/Export", submenu: items }] : [];
+}
+
+/** Context menu of a tree node (`null`: the empty area). */
+export function nodeMenu(n: DbNode | null): MenuItem[] {
+  if (!n) return [{ label: "New", icon: "plus", submenu: newMenu() }];
+  const id = nodeTarget(n) ?? "";
+  const driver = sourceById(id)?.driver ?? "sqlite";
+  const o = objectOf(n);
+  const t = tableOf(n);
+  const newConsole = act("db.newConsole", n, { label: "Query Console", icon: "db-console" });
+  const refresh = act("db.refresh", n);
+  const quickDoc = act("db.quickDoc", n);
+  const rename = act("db.rename", n, { disabled: !(n.kind === "source" || (o && canRename(driver, o))) });
+  const drop = act("db.drop", n, { disabled: !o || !canDrop(driver, o) });
+  const copyRef = act("db.copyReference", n);
+  const readOnly = !!sourceById(id)?.readOnly;
+  const newSchema = newSchemaTarget(n) ? [act("db.newSchema", n, { disabled: readOnly })] : [];
+  const navigation = (extra: MenuItem[] = []): MenuItem => ({
+    label: "Navigation",
+    submenu: [...extra, act("db.jumpToConsole", n)],
+  });
+
+  if (driver === "jdbc" && n.kind !== "source") {
+    return [
+      newConsole,
+      ...(t ? [act("db.editData", n)] : []),
+      refresh,
+      { label: "Copy/Paste", submenu: [copyRef] },
+      navigation(),
+    ];
+  }
+
+  switch (n.kind) {
+    case "source": {
+      const connected = connectedTargets(n.source.id ?? "").length > 0;
+      return [
+        act("db.properties", n, { label: "Properties" }),
+        sep,
+        {
+          label: "New",
+          icon: "plus",
+          submenu: [
+            newConsole,
+            sep,
+            ...(createsDatabases(n.source) ? [act("db.newDatabase", n, { disabled: readOnly })] : []),
+            ...newSchema,
+            ...(createsDatabases(n.source) || newSchema.length ? [sep] : []),
+            ...dataSourceItems(),
+          ],
+        },
+        { label: "Copy/Paste", submenu: [copyRef, act("db.duplicateSource", n)] },
+        refresh,
+        ...(n.source.driver === "snowflake" ? [act("db.introspect", n)] : []),
+        act("db.disconnect", n, { disabled: !connected }),
+        sep,
+        rename,
+        sep,
+        quickDoc,
+        navigation(),
+        sep,
+        ...(driver === "jdbc" ? [act("db.runSqlScript", n)] : [sqlScripts(n, false), act("db.compareSchemas", n)]),
+        ...importExport(dumpItems(n, true)),
+        sep,
+        act("db.drop", n, { label: "Remove Data Source…" }),
+      ];
+    }
+    case "database":
+      return [
+        { label: "New", icon: "plus", submenu: [newConsole, ...(newSchema.length ? [sep, ...newSchema] : [])] },
+        { label: "Copy/Paste", submenu: [copyRef] },
+        refresh,
+        act("db.disconnect", n, { disabled: !useDatabase.getState().connected.has(id) || n.current }),
+        sep,
+        navigation(),
+        sqlScripts(n, false),
+        ...importExport(dumpItems(n, true)),
+        ...(createsDatabases(sourceById(id)) ? [sep, act("db.drop", n, { disabled: n.current || readOnly })] : []),
+      ];
+    case "schema":
+    case "folder":
+      return [
+        { label: "New", icon: "plus", submenu: [newConsole, sep, act("db.newTable", n)] },
+        ...(n.kind === "schema" ? [{ label: "Copy/Paste", submenu: [copyRef] }] : []),
+        refresh,
+        sep,
+        ...(n.kind === "schema" ? [quickDoc] : []),
+        navigation(),
+        sep,
+        sqlScripts(n, false),
+        ...(n.kind === "schema" ? [act("db.compareSchemas", n)] : []),
+        ...importExport(dumpItems(n, true)),
+        ...(n.kind === "schema" ? [sep, drop] : []),
+      ];
+    case "table":
+    case "column": {
+      const view = !!t?.view;
+      const column = n.kind === "column";
+      return [
+        {
+          label: "New",
+          icon: "plus",
+          submenu: [
+            newConsole,
+            sep,
+            act("db.newColumn", n, { disabled: view || !canModifyTable(driver) }),
+            act("db.newTable", n),
+          ],
+        },
+        act("db.modifyTable", n, {
+          label: column ? "Modify Column…" : "Modify Table…",
+          disabled: view || !canModifyTable(driver),
+        }),
+        { label: "Copy/Paste", submenu: [copyRef] },
+        act("db.editData", n),
+        refresh,
+        sep,
+        rename,
+        sep,
+        quickDoc,
+        navigation([act("db.goToDdl", n)]),
+        sep,
+        sqlScripts(n, true),
+        ...(n.kind === "table" && !view
+          ? [
+              {
+                label: "Import/Export",
+                submenu: [
+                  act("db.importData", n, { disabled: driver === "clickhouse" }),
+                  ...(dumpItems(n, false).length ? [sep, ...dumpItems(n, false)] : []),
+                ],
+              },
+              { label: "Object Actions", submenu: [act("db.truncate", n)] },
+            ]
+          : []),
+        sep,
+        drop,
+      ];
+    }
+    case "index":
+      return [
+        { label: "Copy/Paste", submenu: [copyRef] },
+        refresh,
+        sep,
+        rename,
+        sep,
+        navigation([act("db.goToDdl", n)]),
+        sep,
+        drop,
+      ];
+    case "foreignKey":
+      return [refresh, sep, { label: "Navigation", submenu: [act("db.goToReferencedTable", n), act("db.goToDdl", n)] }];
+    case "routine":
+    case "package":
+    case "sequence":
+    case "trigger":
+      return [
+        { label: "Copy/Paste", submenu: [copyRef] },
+        refresh,
+        sep,
+        quickDoc,
+        navigation([act("db.goToDdl", n)]),
+        { label: "SQL Scripts", submenu: [act("db.ddlToClipboard", n), act("db.ddlToConsole", n)] },
+        sep,
+        drop,
+      ];
+    case "group":
+    case "key":
+      return [
+        ...(n.kind === "group" && n.group === "columns"
+          ? [{ label: "New", icon: "plus", submenu: [act("db.newColumn", n, { disabled: !canModifyTable(driver) })] }]
+          : []),
+        refresh,
+        sep,
+        { label: "Navigation", submenu: [act("db.goToDdl", n)] },
+      ];
+    default:
+      return [];
+  }
+}

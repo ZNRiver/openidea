@@ -1,0 +1,208 @@
+.widget {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 280px;
+  height: var(--h-toolbar-widget);
+  border-radius: var(--radius-toolbar-dropdown);
+}
+.icon {
+  flex: none;
+  color: var(--fg-muted);
+}
+.chevron {
+  flex: none;
+  color: var(--fg-subtle);
+}
+.name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.repo {
+  flex: none;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-muted);
+}
+.repo::after {
+  content: " /";
+  color: var(--fg-subtle);
+}
+.operation {
+  color: var(--warning);
+  font-size: var(--fs-tiny);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.popup {
+  width: 380px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.popup.wide {
+  width: 440px;
+}
+.search {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 6px 6px 6px 4px;
+  border-bottom: 1px solid var(--border-popup);
+}
+.searchGrow {
+  flex: 1;
+}
+/* Its height fits the rows; in a resized popup it takes the rest of the height. */
+.listWrap {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 4px 0;
+  box-sizing: content-box;
+}
+.list {
+  flex: 1;
+}
+.section {
+  padding: 0 10px;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: 0 10px;
+  color: var(--warning);
+  font-size: var(--fs-small);
+}
+.noticeLabel {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.noticeDetail {
+  overflow: hidden;
+  color: var(--fg-subtle);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.empty {
+  color: var(--fg-faint);
+}
+.row {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.rowIcon {
+  flex: none;
+  color: var(--fg-subtle);
+}
+.currentIcon {
+  color: var(--accent);
+}
+.label {
+  flex: 0 1 auto;
+  min-width: 40px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.branchName {
+  min-width: 0;
+}
+.branchName,
+.upstream,
+.repoHead {
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+}
+.current {
+  color: var(--fg-strong);
+}
+.tag {
+  flex: none;
+  padding: 0 5px;
+  border-radius: var(--radius-small);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--fs-tiny);
+  line-height: 15px;
+}
+.upstream,
+.repoHead {
+  flex: 0 4 auto;
+  margin-left: auto;
+  min-width: min(3ch, 35%);
+  max-width: 35%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-muted);
+}
+.keys {
+  margin-left: auto;
+  color: var(--fg-subtle);
+  font-family: var(--font-keys);
+  font-size: var(--fs-small);
+}
+.chevron {
+  flex: none;
+  margin-left: auto;
+  color: var(--fg-faint);
+}
+.upstream + .chevron {
+  margin-left: 0;
+}
+.menuPopup {
+  padding: 4px 0;
+}
+.star {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--fg-subtle);
+  cursor: pointer;
+}
+.star > * {
+  grid-area: 1 / 1;
+}
+.star:not(.starOn) .starIcon {
+  visibility: hidden;
+}
+[role="option"]:hover .star:not(.starOn) .starIcon {
+  visibility: visible;
+}
+[role="option"]:hover .star:not(.starOn) .branchIcon {
+  visibility: hidden;
+}
+.separator {
+  flex: 1;
+  height: 1px;
+  margin: 0 4px;
+  background: var(--border-popup);
+}
+.repoColor {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  margin: 0 2px;
+  border-radius: 2px;
+}
+.subChevron {
+  flex: none;
+  color: var(--fg-faint);
+}
+.groupRow {
+  color: var(--fg-secondary);
+}

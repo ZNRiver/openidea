@@ -1,0 +1,254 @@
+/**
+ * Live templates (⌘J, Tab expansion, Surround With ⌥⌘T), postfix completion
+ * (`expr.if` …), Emmet (Tab expansion, Update Tag with Emmet) and file
+ * templates ("New ▸ …").
+ */
+import { registerActions, type Action } from "@/platform/actions";
+import { activeEditor, registerEditorContribution } from "@/editor/api";
+import {
+  notifications,
+  registerMenuGroup,
+  registerOverlay,
+  hasRunConfiguration,
+  type MenuGroupContext,
+} from "@/workbench/contributions";
+import { activateSettingsPages } from "./settingsPages";
+import { insertLiveTemplate, surroundTarget, surroundWith, templateEditorExtension } from "./editor";
+import { ChooserHost } from "./popup/Chooser";
+import { NewFileDialogHost, openNewFileDialog } from "./files/NewFileDialog";
+import { defaultDirectory } from "./files/create";
+import { fileTemplates, useFileTemplates, watchTemplateProject } from "./files/store";
+import type { FileTemplate } from "./files/model";
+import { syncTemplatesFromStorage } from "./sync";
+import { tagAtCaret, updateTag } from "./emmet/editor";
+import { loadEmmet } from "./emmet/model";
+import { promptAbbreviation, UpdateTagDialogHost } from "./emmet/UpdateTagDialog";
+import { tx } from "@/platform/i18n";
+import type { ProjectType } from "@/ui/projectType";
+
+const EDITOR_WHEN = "textEditorActive && !editorReadOnly && (editorFocus || !toolWindowFocus)";
+const MARKUP_PATH = /\.(html?|xhtml|shtml|vue|svelte|xml)$/i;
+
+async function updateTagWithEmmet() {
+  const editor = activeEditor();
+  if (!editor) return;
+  const tag = tagAtCaret(editor.view);
+  if (!tag) {
+    notifications().notify({ level: "info", title: "No tag at the caret", key: "emmet-update-tag" });
+    return;
+  }
+  const [abbreviation] = await Promise.all([promptAbbreviation(tag), loadEmmet()]);
+  editor.view.focus();
+  if (abbreviation && !updateTag(editor.view, abbreviation))
+    notifications().notify({
+      level: "warning",
+      title: "Cannot update the tag",
+      body: tx`'${abbreviation}' does not describe a single element.`,
+      key: "emmet-update-tag",
+    });
+}
+
+interface NewFileArg {
+  directory?: string;
+  templateId?: string;
+  /** Without `templateId`: the template for this file extension (one with `kindId` preferred). */
+  extension?: string;
+  name?: string;
+  kindId?: string;
+  /** An ad-hoc template from another feature (New › HTTP Request), not kept in the template store. */
+  template?: FileTemplate;
+}
+
+const isTemplate = (t: unknown): t is FileTemplate =>
+  !!t &&
+  typeof (t as FileTemplate).name === "string" &&
+  Array.isArray((t as FileTemplate).kinds) &&
+  (t as FileTemplate).kinds.length > 0;
+
+function templateForExtension(extension: string | undefined, kindId: string | undefined): string | undefined {
+  if (!extension) return undefined;
+  const matching = fileTemplates().filter((t) => t.enabled !== false && t.extension === extension);
+  return (matching.find((t) => t.kinds.some((k) => k.id === kindId)) ?? matching[0])?.id;
+}
+
+function directoryOf(arg: unknown): string | null {
+  const a = (arg ?? {}) as NewFileArg;
+  return a.directory ?? defaultDirectory();
+}
+
+function newFileAction(t: FileTemplate): Action {
+  return {
+    id: `templates.new.${t.id}`,
+    title: t.id === "file" ? "New Empty File…" : tx`New ${tx(t.name)}…`,
+    category: "File",
+    icon: t.icon,
+    when: "projectOpen",
+    keywords: [
+      ...new Set(["new", "create", "template", t.extension, ...t.kinds.map((k) => k.extension), t.defaultName]),
+    ].filter((k): k is string => !!k),
+    run: ({ arg }) => {
+      const directory = directoryOf(arg);
+      if (directory) openNewFileDialog({ directory, templateId: t.id });
+    },
+  };
+}
+
+// Generic templates and user or plugin templates have no project type restriction; nor do the web
+// ones (JavaScript, TypeScript), which IntelliJ IDEA Ultimate offers in every project.
+const templateProjectTypes: Partial<Record<string, readonly ProjectType[]>> = {
+  rust: ["cargo"],
+  python: ["python"],
+  jupyter: ["python"],
+  go: ["go"],
+  "go-mod": ["go"],
+  zig: ["zig"],
+  php: ["php"],
+  "php-class": ["php"],
+  java: ["maven", "gradle"],
+  kotlin: ["maven", "gradle"],
+};
+
+/** New popup / New › entries: the enabled templates ("File" is the project view's own entry), then From Template…. */
+function registerNewMenuGroups(): () => void {
+  const arg = (ctx: MenuGroupContext) => (ctx.paths[0] ? { directory: ctx.paths[0] } : undefined);
+  const disposers = [
+    registerMenuGroup({
+      id: "templates.new",
+      menus: ["new"],
+      order: 10,
+      items: (_menu, ctx) => {
+        const directory = ctx.paths[0];
+        const tomcat = directory !== undefined && hasRunConfiguration("tomcat", directory);
+        return fileTemplates()
+          .filter((t) => {
+            if (t.enabled === false || t.id === "file") return false;
+            if (t.id === "tomcat-context") return tomcat;
+            const types = templateProjectTypes[t.id];
+            return !types || !ctx.projectType || types.includes(ctx.projectType);
+          })
+          .map((t) => ({
+            kind: "action",
+            action: `templates.new.${t.id}`,
+            arg: arg(ctx),
+            label: t.name,
+            icon: t.icon,
+          }));
+      },
+    }),
+    registerMenuGroup({
+      id: "templates.newFromTemplate",
+      menus: ["new"],
+      order: 100,
+      items: (_menu, ctx) => [
+        { kind: "action", action: "templates.newFromTemplate", arg: arg(ctx), label: "From Template…" },
+      ],
+    }),
+  ];
+  return () => disposers.forEach((d) => d());
+}
+
+function registerFileTemplateActions(): () => void {
+  let dispose = () => {};
+  const sync = (templates: FileTemplate[]) => {
+    dispose();
+    dispose = registerActions(templates.filter((t) => t.enabled !== false).map(newFileAction));
+  };
+  sync(useFileTemplates.getState().templates);
+  const unsub = useFileTemplates.subscribe((s, prev) => {
+    if (s.templates !== prev.templates) sync(s.templates);
+  });
+  return () => {
+    unsub();
+    dispose();
+  };
+}
+
+export function activate(): () => void {
+  const disposers = [
+    registerEditorContribution({ id: "templates", order: 90, extensions: templateEditorExtension }),
+    registerOverlay({ id: "templates.chooser", component: ChooserHost }),
+    registerOverlay({ id: "templates.newFile", component: NewFileDialogHost }),
+    registerOverlay({ id: "templates.emmetUpdateTag", component: UpdateTagDialogHost }),
+    registerMenuGroup({
+      id: "templates.emmet",
+      menus: ["editor"],
+      order: 60,
+      items: (_menu, { paths: [path] }) =>
+        path && MARKUP_PATH.test(path) ? [{ kind: "action", action: "emmet.updateTag" }] : [],
+    }),
+    registerActions([
+      {
+        id: "code.insertLiveTemplate",
+        title: "Insert Live Template…",
+        category: "Code",
+        when: EDITOR_WHEN,
+        keywords: ["snippet", "template", "abbreviation"],
+        run: () => {
+          const view = activeEditor()?.view;
+          if (view) insertLiveTemplate(view);
+        },
+      },
+      {
+        id: "code.surroundWith",
+        title: "Surround With…",
+        category: "Code",
+        when: EDITOR_WHEN,
+        keywords: ["wrap", "if", "try", "region"],
+        run: async () => {
+          const editor = activeEditor();
+          if (!editor) return;
+          const target = await surroundTarget(editor.view, editor.ctx);
+          if (activeEditor()?.view === editor.view) surroundWith(editor.view, target);
+        },
+      },
+      {
+        id: "code.surroundWithLiveTemplate",
+        title: "Surround with Live Template…",
+        category: "Code",
+        when: EDITOR_WHEN,
+        keywords: ["wrap", "snippet", "template", "selection"],
+        run: async () => {
+          const editor = activeEditor();
+          if (!editor) return;
+          const target = await surroundTarget(editor.view, editor.ctx);
+          if (activeEditor()?.view === editor.view) surroundWith(editor.view, target, true);
+        },
+      },
+      {
+        id: "emmet.updateTag",
+        title: "Update Tag with Emmet",
+        category: "Code",
+        when: `${EDITOR_WHEN} && (editorLangId == html || editorLangId == vue || editorLangId == svelte || editorLangId == xml)`,
+        keywords: ["emmet", "tag", "rename", "class", "attribute"],
+        run: updateTagWithEmmet,
+      },
+      {
+        id: "templates.newFromTemplate",
+        title: "New from Template…",
+        category: "File",
+        icon: "plus",
+        when: "projectOpen",
+        keywords: ["new", "file", "create", "class"],
+        run: ({ arg }) => {
+          const directory = directoryOf(arg);
+          if (!directory) return;
+          const a = (arg ?? {}) as NewFileArg;
+          if (isTemplate(a.template))
+            return openNewFileDialog({ directory, template: a.template, name: a.name, kindId: a.kindId });
+          openNewFileDialog({
+            directory,
+            templateId: a.templateId ?? templateForExtension(a.extension, a.kindId),
+            name: a.name,
+            kindId: a.kindId,
+          });
+        },
+      },
+    ]),
+    registerFileTemplateActions(),
+    registerNewMenuGroups(),
+    activateSettingsPages(),
+    syncTemplatesFromStorage(),
+    watchTemplateProject(),
+  ];
+  return () => disposers.reverse().forEach((d) => d());
+}

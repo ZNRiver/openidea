@@ -1,0 +1,64 @@
+.view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.tabs {
+  min-width: 0;
+  border: 0;
+  background: none;
+}
+.toolbar {
+  min-height: var(--h-header);
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-0-5) var(--space-2);
+  padding: var(--space-0-5) var(--space-1-5);
+}
+.toolbarGroup {
+  display: flex;
+  align-items: center;
+  gap: var(--space-0-5);
+}
+.note {
+  flex: none;
+  padding: 0 8px 4px;
+  font-size: var(--fs-small);
+  font-style: italic;
+  color: var(--fg-subtle);
+  overflow-wrap: anywhere;
+}
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.body > * {
+  flex: 1;
+  min-height: 0;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+}
+.name {
+  color: var(--fg-strong);
+}
+.muted {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.error {
+  flex: none;
+  font-size: var(--fs-small);
+  color: var(--danger);
+}

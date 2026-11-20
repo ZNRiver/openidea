@@ -1,0 +1,236 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("./WindowControls", () => ({
+  WindowControls: ({ side, dialog }: { side: string; dialog?: boolean }) => (
+    <div data-captions={side} data-dialog={dialog ? "" : undefined} />
+  ),
+}));
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { registerActions } from "@/platform/actions";
+import { commands, type Settings } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
+import { usePlatform } from "@/platform/platformInfo";
+import { useThemeOverride } from "./theme";
+import { customizeToolbarItems, gearMenuItems, TitleBar } from "./TitleBar";
+
+let disposers: Array<() => void> = [];
+afterEach(() => {
+  disposers.forEach((d) => d());
+  disposers = [];
+  useThemeOverride.setState({ theme: null });
+});
+
+describe("title bar gear menu", () => {
+  it("lists Run Anything, Settings, Plugins, quick switches, toolbar customization and Check for Updates", () => {
+    const items = gearMenuItems("dark", "intellij-macos", ["Mine"]);
+    expect(items.map((i) => ("action" in i ? i.action : "label" in i ? i.label : i.kind))).toEqual([
+      "runAnything.show",
+      "separator",
+      "file.settings",
+      "plugins.settings",
+      "separator",
+      "Theme",
+      "Keymap",
+      "View Mode",
+      "separator",
+      "Customize Main Toolbar",
+      "separator",
+      "app.checkForUpdates",
+    ]);
+    type Sub = { submenu: Array<{ label?: string; checked?: boolean; action?: string }> };
+    const theme = (items[5] as Sub).submenu;
+    expect(theme.filter((i) => i.checked).map((i) => i.label)).toEqual(["Islands Dark"]);
+    const keymap = (items[6] as Sub).submenu;
+    expect(keymap.map((i) => i.label)).toContain("Mine");
+    expect(keymap.filter((i) => i.checked).map((i) => i.label)).toEqual(["macOS"]);
+    // View Mode only switches the existing modes.
+    expect((items[7] as Sub).submenu.map((i) => i.action)).toEqual(["editor.toggleZen", "window.toggleFullScreen"]);
+  });
+
+  it("lists every widget with a checkbox in Customize Main Toolbar", () => {
+    const toggled: string[] = [];
+    let reset = 0;
+    const items = customizeToolbarItems(
+      { left: ["project", "vcs.branch"], right: ["action:navigate.searchEverywhere"] },
+      ["run.widget"],
+      new Map([
+        ["run.widget", { id: "run.widget", align: "right", priority: 1, component: () => null, title: "Run Widget" }],
+      ]),
+      (id) => toggled.push(id),
+      () => void reset++,
+    );
+    const rows = items.filter(
+      (i): i is { id: string; label: string; checked: boolean; run: () => void } => "checked" in i,
+    );
+    expect(rows.map((r) => [r.label, r.checked])).toEqual([
+      ["Project Widget", true],
+      ["VCS Widget", true],
+      ["navigate.searchEverywhere", true],
+      ["Run Widget", false],
+    ]);
+    rows[3]!.run();
+    expect(toggled).toEqual(["run.widget"]);
+    (items.at(-1) as { run: () => void }).run();
+    expect(reset).toBe(1);
+  });
+
+  it("opens a menu instead of Settings directly, and switches the theme", async () => {
+    let opened = 0;
+    disposers.push(
+      registerActions([{ id: "file.settings", title: "Settings…", category: "File", run: () => void opened++ }]),
+    );
+    render(<TitleBar />);
+    fireEvent.click(screen.getByRole("button", { name: "IDE and Project Settings" }));
+    expect(opened).toBe(0);
+    expect(await screen.findByText("Settings…")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Theme"));
+    fireEvent.click(await screen.findByText("High Contrast"));
+    expect(useThemeOverride.getState().theme).toBe("dark-hc");
+  });
+});
+
+describe("title bar in Distraction Free Mode (bare)", () => {
+  // The main menu is the way back out of a view mode that hides the toolbar:
+  // the title bar's ☰ where the window is frameless (Windows), the OS menu bar elsewhere.
+  it.each([
+    { os: "windows", overlayTitleBar: false, framelessTitleBar: true, mainMenu: true },
+    { os: "macos", overlayTitleBar: true, framelessTitleBar: false, mainMenu: false },
+    { os: "linux", overlayTitleBar: false, framelessTitleBar: false, mainMenu: false },
+  ])("$os: keeps the main menu button where there is no native menu bar", ({ mainMenu, ...platform }) => {
+    const saved = usePlatform.getState();
+    usePlatform.setState(platform);
+    try {
+      const { container } = render(<TitleBar bare />);
+      expect(container.querySelector("header[data-titlebar='bare']")).not.toBeNull();
+      expect(screen.queryByRole("button", { name: "IDE and Project Settings" })).toBeNull();
+      expect(!!screen.queryByRole("button", { name: "Main Menu" })).toBe(mainMenu);
+    } finally {
+      usePlatform.setState(saved);
+    }
+  });
+});
+
+describe("expanded main menu in a frameless title bar", () => {
+  it("hides the right-hand toolbar while the menu is expanded and restores it on close", async () => {
+    const platform = usePlatform.getState();
+    const project = useProject.getState();
+    const menuModel = vi
+      .spyOn(commands, "menuModel")
+      .mockResolvedValue([{ kind: "submenu", id: "file", label: "File", children: [] }]);
+    usePlatform.setState({ os: "windows", framelessTitleBar: true, overlayTitleBar: false });
+    useProject.setState({ settings: { appearance: { mainMenuStyle: "hamburger" } } as Settings });
+    try {
+      render(<TitleBar />);
+      await act(async () => {});
+      const gear = () => screen.queryByRole("button", { name: "IDE and Project Settings" });
+      expect(gear()).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Main Menu" }));
+      await screen.findByRole("menu");
+      expect(gear()).toBeNull();
+      expect(screen.getByRole("menubar")).toBeInTheDocument();
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+      await act(async () => {});
+      expect(gear()).toBeInTheDocument();
+    } finally {
+      menuModel.mockRestore();
+      usePlatform.setState(platform);
+      useProject.setState(project);
+    }
+  });
+});
+
+describe("caption buttons in a frameless title bar", () => {
+  it.each([false, true])("lead the bar on the left and close it on the right (dialog: %s)", async (dialog) => {
+    const platform = usePlatform.getState();
+    const menuModel = vi.spyOn(commands, "menuModel").mockResolvedValue([]);
+    usePlatform.setState({ os: "linux", framelessTitleBar: true, overlayTitleBar: false });
+    try {
+      const { container } = render(dialog ? <TitleBar minimal dialog title="Settings" /> : <TitleBar />);
+      await act(async () => {});
+      const header = container.querySelector("header")!;
+      expect(header.firstElementChild?.getAttribute("data-captions")).toBe("left");
+      expect(header.lastElementChild?.getAttribute("data-captions")).toBe("right");
+      expect(header.querySelectorAll("[data-dialog]")).toHaveLength(dialog ? 2 : 0);
+      if (!dialog) {
+        const menu = screen.getByRole("button", { name: "Main Menu" });
+        expect(header.firstElementChild!.compareDocumentPosition(menu) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      }
+    } finally {
+      menuModel.mockRestore();
+      usePlatform.setState(platform);
+    }
+  });
+});
+
+describe("merged title bar menu", () => {
+  it.each(["windows", "linux", "macos"])(
+    "%s keeps toolbar controls available and uses the menu only when frameless",
+    async (os) => {
+      const savedPlatform = usePlatform.getState();
+      const savedProject = useProject.getState();
+      const model = vi
+        .spyOn(commands, "menuModel")
+        .mockResolvedValue([{ kind: "submenu", id: "file", label: "File", children: [] }]);
+      usePlatform.setState({ os, framelessTitleBar: os !== "macos", overlayTitleBar: os === "macos" });
+      useProject.setState({ settings: { appearance: { mainMenuStyle: "merged" } } as Settings });
+      try {
+        render(<TitleBar />);
+        await act(async () => {});
+        expect(!!screen.queryByRole("menubar")).toBe(os !== "macos");
+        expect(screen.queryByRole("button", { name: "Main Menu" })).toBeNull();
+        if (os !== "macos") fireEvent.click(screen.getByRole("menuitem", { name: "File" }));
+        expect(screen.getByRole("button", { name: "OpenIDEA" })).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: "IDE and Project Settings" }));
+        expect(await screen.findByRole("menu", { name: "IDE and Project Settings" })).toBeInTheDocument();
+      } finally {
+        usePlatform.setState(savedPlatform);
+        useProject.setState(savedProject);
+        model.mockRestore();
+      }
+    },
+  );
+});
+
+it("puts the main menu in its own row below the title bar with the Separate toolbar style", async () => {
+  const savedPlatform = usePlatform.getState();
+  const savedProject = useProject.getState();
+  const model = vi
+    .spyOn(commands, "menuModel")
+    .mockResolvedValue([{ kind: "submenu", id: "file", label: "File", children: [] }]);
+  usePlatform.setState({ os: "windows", framelessTitleBar: true, overlayTitleBar: false });
+  useProject.setState({ settings: { appearance: { mainMenuStyle: "toolbar" } } as Settings });
+  try {
+    const { container } = render(<TitleBar />);
+    await act(async () => {});
+    const header = container.querySelector("header")!;
+    const menubar = screen.getByRole("menubar");
+    expect(header.contains(menubar)).toBe(false);
+    expect(header.nextElementSibling?.contains(menubar)).toBe(true);
+    expect(screen.queryByRole("button", { name: "Main Menu" })).toBeNull();
+  } finally {
+    usePlatform.setState(savedPlatform);
+    useProject.setState(savedProject);
+    model.mockRestore();
+  }
+});
+
+describe("compact window header", () => {
+  it("shows the window title and follows it, without toolbar widgets", async () => {
+    document.title = "demo – src/main.rs";
+    render(<TitleBar compact />);
+    const bar = document.querySelector("header[data-titlebar='compact']")!;
+    expect(bar.textContent).toBe("demo – src/main.rs");
+    expect(bar.querySelector("button")).toBeNull();
+    await act(async () => {
+      document.title = "demo – Cargo.toml";
+      await Promise.resolve();
+    });
+    expect(bar.textContent).toBe("demo – Cargo.toml");
+  });
+
+  it("prefers an explicit title (LightEdit)", () => {
+    document.title = "ignored";
+    render(<TitleBar compact lightEdit title="notes.txt" />);
+    expect(document.querySelector("header[data-titlebar='compact']")!.textContent).toBe("notes.txt");
+  });
+});

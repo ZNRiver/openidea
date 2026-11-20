@@ -1,0 +1,239 @@
+/** Data source (add / edit / test connection) and password dialogs. */
+import { Fragment, useState } from "react";
+import { call, commands, type DataSource } from "@/platform/ipc";
+import { Checkbox, Dialog, Input, lazyComponent, T } from "@/ui";
+import { sshLabel } from "./model";
+import { SourceDialog, snowflakeSecretLabel } from "./SourceDialog";
+import { closeDialog, saveSource, sourceById, useDatabase } from "./store";
+import styles from "./Database.module.css";
+import { isImeKey } from "@/platform/ime";
+import { tx } from "@/platform/i18n";
+
+const ObjectDialogs = lazyComponent(() => import("./ObjectDialogs").then((m) => m.ObjectDialogs));
+const ExportDialog = lazyComponent(() => import("./ExportDialog").then((m) => m.ExportDialog));
+const HistoryDialog = lazyComponent(() => import("./DataDialogs").then((m) => m.HistoryDialog));
+const ImportDialog = lazyComponent(() => import("./DataDialogs").then((m) => m.ImportDialog));
+const SchemaCompareDialog = lazyComponent(() => import("./SchemaCompareDialog").then((m) => m.SchemaCompareDialog));
+const DumpDialog = lazyComponent(() => import("./DumpDialogs").then((m) => m.DumpDialog));
+const RestoreDialog = lazyComponent(() => import("./DumpDialogs").then((m) => m.RestoreDialog));
+const MysqlDumpDialog = lazyComponent(() => import("./MysqlDumpDialogs").then((m) => m.MysqlDumpDialog));
+const MysqlRestoreDialog = lazyComponent(() => import("./MysqlDumpDialogs").then((m) => m.MysqlRestoreDialog));
+
+function PasswordDialog({ source, resolve }: { source: DataSource; resolve: (ok: boolean) => void }) {
+  const [password, setPassword] = useState("");
+  const [save, setSave] = useState(!!source.savePassword);
+  const done = (ok: boolean) => {
+    closeDialog();
+    resolve(ok);
+  };
+  const submit = async () => {
+    // The checkbox is the data source's Save password setting: saved passwords are read only when it is on.
+    if (save !== !!source.savePassword) await saveSource({ ...source, savePassword: save }, password);
+    else await call(commands.dbSetPassword(source.id ?? "", password, save));
+    done(true);
+  };
+  return (
+    <Dialog
+      open
+      onClose={() => done(false)}
+      title={tx`Connect to ${source.name}`}
+      width={400}
+      buttons={[
+        { label: "Cancel", role: "cancel" },
+        { label: "Connect", role: "default", onClick: () => void submit() },
+      ]}
+    >
+      <div className={styles.form}>
+        <span className={styles.formLabel}>
+          <T>User:</T>
+        </span>
+        <span>{source.user || "(default)"}</span>
+        <label className={styles.formLabel} htmlFor="db-ask-password">
+          {tx(source.driver === "snowflake" ? snowflakeSecretLabel(source.snowflake?.auth) : "Password:")}
+        </label>
+        <Input
+          id="db-ask-password"
+          type="password"
+          autoFocus
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+        <span />
+        <Checkbox checked={save} onChange={setSave} label="Save password" />
+      </div>
+    </Dialog>
+  );
+}
+
+/** SSH password / key passphrase asked on connect. */
+function SshSecretDialog({
+  source,
+  prompt,
+  resolve,
+}: {
+  source: DataSource;
+  prompt: string;
+  resolve: (ok: boolean) => void;
+}) {
+  const [secret, setSecret] = useState("");
+  const [save, setSave] = useState(!!source.ssh?.saveSecret);
+  const password = source.ssh?.auth === "password" || /password required/.test(prompt);
+  const done = (ok: boolean) => {
+    closeDialog();
+    resolve(ok);
+  };
+  const submit = async () => {
+    // As for the password: the data source's own SSH settings read a saved secret only when Save is on.
+    // An SSH configuration keeps its own setting.
+    const stored = sourceById(source.id);
+    if (stored?.ssh && !stored.ssh.config?.trim() && save !== !!stored.ssh.saveSecret)
+      await saveSource({ ...stored, ssh: { ...stored.ssh, saveSecret: save } }, undefined, secret);
+    else await call(commands.dbSetSshSecret(source.id ?? "", secret, save));
+    done(true);
+  };
+  return (
+    <Dialog
+      open
+      onClose={() => done(false)}
+      title={tx`SSH: ${sshLabel(source) || source.name}`}
+      width={440}
+      buttons={[
+        { label: "Cancel", role: "cancel" },
+        { label: "Connect", role: "default", onClick: () => void submit() },
+      ]}
+    >
+      <div className={styles.form}>
+        <span />
+        <span className={styles.formHint}>{prompt}</span>
+        <label className={styles.formLabel} htmlFor="db-ask-ssh-secret">
+          {password ? "Password:" : "Passphrase:"}
+        </label>
+        <Input
+          id="db-ask-ssh-secret"
+          type="password"
+          autoFocus
+          value={secret}
+          onChange={(e) => setSecret(e.target.value)}
+        />
+        <span />
+        <Checkbox checked={save} onChange={setSave} label="Save password" />
+      </div>
+    </Dialog>
+  );
+}
+
+/** IDEA's parameter dialog: one SQL value per query parameter, remembered for the next run. */
+function ParamsDialog({
+  names,
+  resolve,
+}: {
+  names: string[];
+  resolve: (values: Record<string, string> | null) => void;
+}) {
+  const [values, setValues] = useState<Record<string, string>>(() => {
+    const last = useDatabase.getState().paramValues;
+    return Object.fromEntries(names.map((n) => [n, last[n] ?? ""]));
+  });
+  const done = (v: Record<string, string> | null) => {
+    closeDialog();
+    resolve(v);
+  };
+  return (
+    <Dialog
+      open
+      onClose={() => done(null)}
+      title="Parameters"
+      width={480}
+      buttons={[
+        { label: "Cancel", role: "cancel" },
+        { label: "Execute", role: "default", onClick: () => done(values) },
+      ]}
+    >
+      <div
+        className={styles.form}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" || isImeKey(e.nativeEvent)) return;
+          e.preventDefault();
+          done(values);
+        }}
+      >
+        {names.map((n, i) => (
+          <Fragment key={n}>
+            <label className={styles.formLabel} htmlFor={`db-param-${i}`}>
+              {n}
+            </label>
+            <Input
+              id={`db-param-${i}`}
+              className={styles.paramInput}
+              autoFocus={i === 0}
+              value={values[n] ?? ""}
+              placeholder="NULL"
+              onChange={(e) => setValues((v) => ({ ...v, [n]: e.target.value }))}
+            />
+          </Fragment>
+        ))}
+        <span />
+        <span className={styles.formHint}>
+          <T>Values are inserted as SQL: quote strings, e.g. 'abc'.</T>
+        </span>
+      </div>
+    </Dialog>
+  );
+}
+
+/** Overlay host: whichever dialog the store asks for. */
+export function DatabaseDialogs() {
+  const dialog = useDatabase((s) => s.dialog);
+  if (!dialog) return null;
+  if (dialog.kind === "source")
+    return (
+      <SourceDialog
+        key={dialog.source?.id ?? "new"}
+        initial={dialog.source}
+        preset={dialog.preset}
+        presetPassword={dialog.password}
+      />
+    );
+  if (dialog.kind === "params") return <ParamsDialog names={dialog.names} resolve={dialog.resolve} />;
+  if (dialog.kind === "export")
+    return <ExportDialog data={dialog.data} source={dialog.source} initialFormat={dialog.format} />;
+  if (dialog.kind === "compareSchemas") return <SchemaCompareDialog initial={dialog.source} />;
+  if (dialog.kind === "history") return <HistoryDialog key={dialog.id} id={dialog.id} path={dialog.path} />;
+  if (dialog.kind === "import")
+    return (
+      <ImportDialog key={`${dialog.id}.${dialog.table}`} id={dialog.id} schema={dialog.schema} table={dialog.table} />
+    );
+  if (dialog.kind === "dump")
+    return (
+      <DumpDialog
+        key={dialog.target}
+        target={dialog.target}
+        database={dialog.database}
+        schemas={dialog.schemas}
+        tables={dialog.tables}
+        serverVersion={dialog.serverVersion}
+      />
+    );
+  if (dialog.kind === "restore")
+    return (
+      <RestoreDialog
+        key={dialog.target}
+        target={dialog.target}
+        database={dialog.database}
+        serverVersion={dialog.serverVersion}
+      />
+    );
+  if (dialog.kind === "mysqlDump")
+    return (
+      <MysqlDumpDialog key={dialog.target} target={dialog.target} database={dialog.database} tables={dialog.tables} />
+    );
+  if (dialog.kind === "mysqlRestore")
+    return <MysqlRestoreDialog key={dialog.target} target={dialog.target} database={dialog.database} />;
+  if (dialog.kind === "sshSecret")
+    return (
+      <SshSecretDialog key={dialog.source.id} source={dialog.source} prompt={dialog.prompt} resolve={dialog.resolve} />
+    );
+  if (dialog.kind === "password")
+    return <PasswordDialog key={dialog.source.id} source={dialog.source} resolve={dialog.resolve} />;
+  return <ObjectDialogs />;
+}
