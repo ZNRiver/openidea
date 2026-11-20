@@ -194,7 +194,7 @@ pub fn toolchain_env(path: &Path) -> Option<CppToolchainEnv> {
             return None;
         }
         let winsysroot = manifest.winsysroot.map(|rel| path.join(rel)).filter(|p| p.is_dir());
-        let arch = manifest.arch.as_deref().unwrap_or_else(current_win_arch);
+        let arch = manifest.arch.as_deref().unwrap_or(current_win_arch());
         let (include_dirs, lib_dirs) =
             winsysroot.as_deref().map(|s| winsysroot_dirs(s, arch)).unwrap_or_default();
         return Some(CppToolchainEnv {
