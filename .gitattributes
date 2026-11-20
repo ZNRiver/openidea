@@ -1,0 +1,4 @@
+# Keep patch files and Unix scripts with LF endings across platforms
+patches/*.patch text eol=lf
+*.sh text eol=lf
+src-tauri/cli/openidea text eol=lf
