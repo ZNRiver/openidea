@@ -92,6 +92,9 @@ close_project                                always             project_host bin
 coverage_collect                             trusted            project_host bindings async
 coverage_import                              always             project_host bindings async
 coverage_prepare                             trusted            project_host bindings async
+cpp_download                                 always             project_host bindings async
+cpp_download_location                        always             project_host bindings sync
+cpp_download_providers                       always             project_host bindings sync
 cucumber_sources                             trusted            desktop      bindings async
 db_apply_edits                               trusted            project_host bindings async
 db_approve_jdbc_source                       trusted            project_host bindings sync

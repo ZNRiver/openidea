@@ -117,6 +117,7 @@ pub fn run() {
             ide_tools::extend_process_path(data);
             ide_dap::adapter::set_tools_root(ide_tools::tools_dir(data));
             ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(data));
+            ide_sdk::cpp::add_cpp_root(&ide_tools::cpp::cpp_dir(data));
         }
         Err(error) => tracing::error!("{error}"),
     }

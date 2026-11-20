@@ -1178,6 +1178,7 @@ pub struct LanguagesSettings {
     pub markdown: MarkdownSettings,
     pub arduino: ArduinoSettings,
     pub zig: ZigSettings,
+    pub cpp: CppSettings,
 }
 
 impl Default for LanguagesSettings {
@@ -1201,6 +1202,7 @@ impl Default for LanguagesSettings {
             markdown: MarkdownSettings::default(),
             arduino: ArduinoSettings::default(),
             zig: ZigSettings::default(),
+            cpp: CppSettings::default(),
         }
     }
 }
@@ -1437,6 +1439,13 @@ impl Default for RustSettings {
 pub struct ZigSettings {
     /// Directory holding the `zig` executable; empty = the one on `PATH`.
     pub zig: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CppSettings {
+    /// Directory of the C/C++ compiler toolchain (or its `bin/` folder); empty = auto-detect.
+    pub toolchain: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]

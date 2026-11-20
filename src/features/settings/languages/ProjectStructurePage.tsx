@@ -139,6 +139,7 @@ const SDK_KINDS: Array<{ kind: SdkKind; label: string }> = [
   { kind: "php", label: "PHP" },
   { kind: "ruby", label: "Ruby" },
   { kind: "maven", label: "Maven" },
+  { kind: "cpp", label: "C/C++" },
 ];
 
 async function readDirs(root: string, path: string): Promise<DirNode[]> {

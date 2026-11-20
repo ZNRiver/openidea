@@ -5,6 +5,7 @@ import { tx } from "@/platform/i18n";
 import { IconButton, Input, T } from "@/ui";
 import { Row, Section } from "../components/Form";
 import { useSetting } from "../components/context";
+import { SdkField } from "../languages/components";
 import { TableEditor } from "./workflowControls";
 import styles from "./Workflow.module.css";
 import own from "./CMake.module.css";
@@ -27,6 +28,7 @@ function ArgumentsInput({ id, value, onChange }: { id: string; value: string[]; 
 
 export function CMakeProfiles() {
   const [saved, setProfiles] = useSetting<CMakeProfileValid[] | undefined>("cmake.profiles");
+  const [toolchain, setToolchain] = useSetting<string>("languages.cpp.toolchain");
   const profiles = saved ?? [DEFAULT_CMAKE_PROFILE];
   const [selected, setSelected] = useState(0);
   const index = Math.min(selected, Math.max(0, profiles.length - 1));
@@ -44,6 +46,23 @@ export function CMakeProfiles() {
   ] as const;
   return (
     <div className={styles.toolsLayout}>
+      <Section title="C/C++ toolchain">
+        <Row
+          label="C/C++ compiler toolchain"
+          hint="Compiler used by CMake and clangd (PATH, CC, CXX, INCLUDE, LIB). Choose Download C/C++ Compiler… to install MinGW-w64, LLVM/Clang with standalone Windows SDK (without Visual Studio), or Visual Studio Build Tools."
+        >
+          <SdkField
+            kind="cpp"
+            value={toolchain ?? ""}
+            onChange={setToolchain}
+            emptyLabel="Auto"
+            emptyDetail="downloaded toolchain or compiler on PATH"
+            directory
+            browseTitle="Select C/C++ Toolchain Directory"
+            aria-label="C/C++ compiler toolchain"
+          />
+        </Row>
+      </Section>
       <Section title="CMake profiles">
         <div className={styles.tableBox}>
           <div className={styles.toolbar} role="toolbar" aria-label={tx("CMake profile actions")}>

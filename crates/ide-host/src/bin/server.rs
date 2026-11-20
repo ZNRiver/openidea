@@ -54,6 +54,7 @@ fn main() {
     ide_tools::extend_process_path(&data_dir);
     ide_dap::adapter::set_tools_root(ide_tools::tools_dir(&data_dir));
     ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(&data_dir));
+    ide_sdk::cpp::add_cpp_root(&ide_tools::cpp::cpp_dir(&data_dir));
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
     let code = runtime.block_on(run(base));
     std::process::exit(code);

@@ -6,8 +6,9 @@ import { useProject } from "@/platform/project";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { useSetting } from "../components/context";
-import { detectSdks, useSdks, type Sdk, type SdkKind } from "./api";
+import { detectSdks, rememberSdk, useSdks, type Sdk, type SdkKind } from "./api";
 import { choosePath } from "@/platform/choosePath";
+import { openDownloadCppDialog } from "@/platform/cpp";
 import { DownloadJdkDialog } from "./DownloadJdkDialog";
 import styles from "./Sdk.module.css";
 
@@ -68,6 +69,8 @@ export interface SdkFieldProps {
 
 /** The "Download JDK…" entry of JDK combos (not a value). */
 const DOWNLOAD_JDK = "\u0000download-jdk";
+/** The "Download C/C++ Compiler…" entry of C/C++ combos (not a value). */
+const DOWNLOAD_CPP = "\u0000download-cpp";
 
 /** IDEA's SDK combo: detected installations, the current custom path, and a browse button; JDK combos also offer Download JDK…. */
 export function SdkField({
@@ -108,6 +111,7 @@ export function SdkField({
       );
     }
     if (kind === "jdk") out.push({ value: DOWNLOAD_JDK, label: "Download JDK…", icon: "plus" });
+    if (kind === "cpp") out.push({ value: DOWNLOAD_CPP, label: "Download C/C++ Compiler…", icon: "plus" });
     return out;
   }, [list, value, emptyLabel, emptyDetail, extra, exclude, optionIcon, kind, minJava, invalid]);
   const [downloading, setDownloading] = useState(false);
@@ -115,13 +119,26 @@ export function SdkField({
     const picked = await choosePath({ directory: !!directory, title: browseTitle, defaultPath: value || undefined });
     if (picked) onChange(picked);
   };
+  const handleSelect = (v: string) => {
+    if (v === DOWNLOAD_JDK) {
+      setDownloading(true);
+    } else if (v === DOWNLOAD_CPP) {
+      void openDownloadCppDialog().then((sdk) => {
+        if (!sdk) return;
+        rememberSdk("cpp", sdk);
+        onChange(sdk.path);
+      });
+    } else {
+      onChange(v);
+    }
+  };
   return (
     <span className={styles.sdkField}>
       <Select
         className={styles.sdkSelect}
         value={value}
         options={options}
-        onChange={(v) => (v === DOWNLOAD_JDK ? setDownloading(true) : onChange(v))}
+        onChange={handleSelect}
         aria-label={aria["aria-label"]}
         placeholder={loading ? "Detecting…" : "<No interpreter>"}
       />

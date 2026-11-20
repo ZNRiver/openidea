@@ -6,6 +6,8 @@
  * `java.downloadJdk` (arg: `DownloadJdkArgs`).
  */
 import { executeAction, registerActions } from "@/platform/actions";
+import { registerOverlay } from "@/workbench/contributions";
+import { DownloadCppOverlay, installCppPrompts, registerCppActions } from "./cpp";
 import { installExpiredServerPrompts } from "./expired";
 import { installJdkPrompts, registerJdkActions } from "./jdk";
 import {
@@ -74,6 +76,9 @@ export function activate(): () => void {
     installExpiredServerPrompts(),
     registerJdkActions(),
     installJdkPrompts(),
+    registerOverlay({ id: "tools.downloadCpp", component: DownloadCppOverlay }),
+    registerCppActions(),
+    installCppPrompts(),
   ];
   return () => disposers.reverse().forEach((d) => d());
 }

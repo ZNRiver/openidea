@@ -147,6 +147,18 @@ pub(crate) fn zig_bin(root: &Path, s: &Settings) -> Option<PathBuf> {
         .map(|p| if p.is_file() { p.parent().map(Path::to_path_buf).unwrap_or(p) } else { p })
 }
 
+/// Resolved C/C++ toolchain environment: the configured one (`languages.cpp.toolchain`),
+/// else the first IDE-downloaded toolchain when no system compiler is on `PATH`.
+pub(crate) fn cpp_toolchain(root: &Path, s: &Settings) -> Option<crate::cpp::CppToolchainEnv> {
+    if let Some(dir) = setting_path(root, &s.languages.cpp.toolchain) {
+        return crate::cpp::toolchain_env(&dir);
+    }
+    if !crate::cpp::has_system_compiler() {
+        return crate::cpp::default_downloaded_env();
+    }
+    None
+}
+
 /// Runtime choices for package-manager based IDE tool installs.
 #[derive(Default)]
 pub struct ToolInstallEnvironment {
@@ -1392,6 +1404,29 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         }
     }
 
+    if name == "clangd"
+        && let Some(cpp) = cpp_toolchain(root, s)
+    {
+        path_dirs.push(cpp.bin_dir.clone());
+        if !cpp.include_dirs.is_empty() {
+            cfg.env.insert("INCLUDE".into(), crate::cpp::join_search_dirs(&cpp.include_dirs));
+        }
+        if !cpp.lib_dirs.is_empty() {
+            cfg.env.insert("LIB".into(), crate::cpp::join_search_dirs(&cpp.lib_dirs));
+        }
+        if !cfg.args.iter().any(|a| a.starts_with("--query-driver")) {
+            let drivers: Vec<String> = cpp
+                .c_compiler
+                .iter()
+                .chain(cpp.cxx_compiler.iter())
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            if !drivers.is_empty() {
+                cfg.args.push(format!("--query-driver={}", drivers.join(",")));
+            }
+        }
+    }
+
     // Node-based servers (`#!/usr/bin/env node`) run on the selected Node.js.
     if let Some(dir) = node_dir(root, s) {
         path_dirs.push(dir);
@@ -1984,6 +2019,29 @@ pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback:
                         }
                     }
                     _ => {}
+                }
+            }
+            "cmake" | "cmake-application" => {
+                if let Some(cpp) = cpp_toolchain(root, s) {
+                    path_dirs.push(cpp.bin_dir.clone());
+                    if !cpp.include_dirs.is_empty() {
+                        c.env.entry("INCLUDE".into()).or_insert_with(|| crate::cpp::join_search_dirs(&cpp.include_dirs));
+                    }
+                    if !cpp.lib_dirs.is_empty() {
+                        c.env.entry("LIB".into()).or_insert_with(|| crate::cpp::join_search_dirs(&cpp.lib_dirs));
+                    }
+                    if c.kind == "cmake" {
+                        if let Some(cc) = &cpp.c_compiler {
+                            c.env.entry("CC".into()).or_insert_with(|| cc.to_string_lossy().into_owned());
+                        }
+                        if let Some(cxx) = &cpp.cxx_compiler {
+                            c.env.entry("CXX".into()).or_insert_with(|| cxx.to_string_lossy().into_owned());
+                        }
+                        let has_ninja = which("ninja").is_some() || cpp.bin_dir.join(exe("ninja")).is_file();
+                        if !cpp.is_msvc && has_ninja && !c.args.iter().any(|a| a == "-G") {
+                            c.env.entry("CMAKE_GENERATOR".into()).or_insert_with(|| "Ninja".into());
+                        }
+                    }
                 }
             }
             "maven" => {

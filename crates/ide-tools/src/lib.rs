@@ -17,6 +17,7 @@
 
 pub mod archive;
 mod bundled;
+pub mod cpp;
 pub mod formatter;
 pub mod jdk;
 pub mod mirror;

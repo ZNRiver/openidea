@@ -107,6 +107,14 @@
 }
 .fieldSelect {
   max-width: 100%;
+  flex: 1;
+  min-width: 0;
+}
+.sdkRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
 }
 .hint,
 .fieldHint {
@@ -135,6 +143,18 @@
   border-radius: var(--radius-control, 4px);
   background: var(--bg-feedback-warning);
   overflow-wrap: anywhere;
+}
+.missingBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  flex: 1;
+}
+.missingActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 .segmented {
   display: inline-flex;

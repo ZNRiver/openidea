@@ -296,6 +296,17 @@ export const commands = {
 	 *  or which tool is missing.
 	 */
 	coveragePrepare: (config: RunConfig_Deserialize) => typedError<CoveragePrepared_Serialize, IdeError>(__TAURI_INVOKE("coverage_prepare", { config })),
+	/**
+	 *  Downloads a C/C++ compiler toolchain (`llvm-winsdk`, `mingw-winlibs`, `llvm-mingw`,
+	 *  `msvc-buildtools`, or `llvm`) into `location` (default: [`cpp_download_location`]),
+	 *  optionally installing CMake and Ninja if missing. Streams progress through `on_event`;
+	 *  cancellable with `cancel_request(request)`.
+	 */
+	cppDownload: (provider: string, location: string | null, installBuildTools: boolean, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("cpp_download", { provider, location, installBuildTools, request, onEvent })),
+	/**  Where Download C/C++ Compiler puts downloaded toolchains unless told otherwise. */
+	cppDownloadLocation: () => typedError<IpcPath, IdeError>(__TAURI_INVOKE("cpp_download_location")),
+	/**  C/C++ compiler distributions available for download on this platform. */
+	cppDownloadProviders: () => __TAURI_INVOKE<CppProvider[]>("cpp_download_providers"),
 	/**  Cucumber feature files and step definition files, for step navigation. */
 	cucumberSources: () => typedError<StepSource[], IdeError>(__TAURI_INVOKE("cucumber_sources")),
 	dbApplyEdits: (id: string, schema: string, table: string, edits: DbRowEdit[]) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_apply_edits", { id, schema, table, edits })),
@@ -4167,6 +4178,23 @@ export type CoverageSuite = {
 	files: FileCoverage[],
 };
 
+/**  A C/C++ compiler distribution the IDE can download. */
+export type CppProvider = {
+	id: string,
+	name: string,
+	description: string,
+	/**  Downloads/bundles the Windows SDK and CRT (without needing Visual Studio IDE for LLVM). */
+	includesWindowsSdk: boolean,
+	/**  Runs an official system installer that prompts for administrator elevation. */
+	requiresAdmin: boolean,
+	recommended: boolean,
+};
+
+export type CppSettings = {
+	/**  Directory of the C/C++ compiler toolchain (or its `bin/` folder); empty = auto-detect. */
+	toolchain?: string,
+};
+
 export type CreatePullRequest = {
 	title: string,
 	body: string,
@@ -8015,6 +8043,7 @@ export type LanguagesSettings = {
 	markdown?: MarkdownSettings,
 	arduino?: ArduinoSettings,
 	zig?: ZigSettings,
+	cpp?: CppSettings,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -11047,7 +11076,9 @@ export type SdkKind = "python" | "node" |
 /**  Maven homes. */
 "maven" | "ruby" | 
 /**  Zig toolchain directories. */
-"zig";
+"zig" | 
+/**  C/C++ compiler toolchains. */
+"cpp";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and

@@ -5,6 +5,7 @@ use ide_command::command;
 
 use ide_core::{IdeError, IdeResult, RequestId};
 use ide_sdk::Sdk;
+use ide_tools::cpp::CppProvider;
 use ide_tools::jdk::{JdkReleases, JdkVendor};
 use ide_tools::{InstallEvent, ToolInfo, ToolUpdate, Tools};
 use std::path::PathBuf;
@@ -154,7 +155,7 @@ pub async fn jdk_download(
     request: RequestId,
     on_event: Channel<InstallEvent>,
 ) -> IdeResult<Sdk> {
-    let tools = Tools::new(&host.local_data_dir);
+    let tools = Tools::new(&host.local_data_dir).with_downloads(host.global_settings.effective().tool_downloads);
     let location = location.filter(|p| !p.as_os_str().is_empty());
     let cancel = host.begin_request(request);
     let result = tokio::task::spawn_blocking(move || {
@@ -196,8 +197,65 @@ pub async fn jdtls_required_java(host: &Host, window: &str) -> IdeResult<Option<
     tokio::task::spawn_blocking(move || ide_sdk::java::jdtls_required_java(&cfg)).await.map_err(join_err)
 }
 
+/// C/C++ compiler distributions available for download on this platform.
+#[command(trust = always)]
+pub fn cpp_download_providers() -> Vec<CppProvider> {
+    ide_tools::cpp::providers()
+}
+
+/// Where Download C/C++ Compiler puts downloaded toolchains unless told otherwise.
+#[command(trust = always)]
+pub fn cpp_download_location(host: &Host) -> IdeResult<ide_core::IpcPath> {
+    Ok(ide_tools::cpp::cpp_dir(&host.local_data_dir).into())
+}
+
+/// Downloads a C/C++ compiler toolchain (`llvm-winsdk`, `mingw-winlibs`, `llvm-mingw`,
+/// `msvc-buildtools`, or `llvm`) into `location` (default: [`cpp_download_location`]),
+/// optionally installing CMake and Ninja if missing. Streams progress through `on_event`;
+/// cancellable with `cancel_request(request)`.
+#[command(trust = always)]
+pub async fn cpp_download(
+    host: &Host,
+    provider: String,
+    location: Option<PathBuf>,
+    install_build_tools: bool,
+    request: RequestId,
+    on_event: Channel<InstallEvent>,
+) -> IdeResult<Sdk> {
+    let tools = Tools::new(&host.local_data_dir).with_downloads(host.global_settings.effective().tool_downloads);
+    let location = location.filter(|p| !p.as_os_str().is_empty());
+    let cancel = host.begin_request(request);
+    let result = tokio::task::spawn_blocking(move || {
+        let downloaded = tools.download_cpp(&provider, location.as_deref(), install_build_tools, &cancel, &|e| {
+            let _ = on_event.send(e);
+        })?;
+        let home = downloaded.home.into_path_buf();
+        if let Some(location) = &location {
+            ide_sdk::cpp::add_cpp_root(location);
+        }
+        let sdk = ide_sdk::cpp::sdk_at(&home).unwrap_or_else(|| Sdk {
+            path: home.clone().into(),
+            name: format!("{} {}", downloaded.provider, downloaded.version),
+            version: Some(downloaded.version),
+            source: "downloaded".into(),
+            home: Some(home.into()),
+            extra: downloaded.winsysroot,
+        });
+        IdeResult::Ok(sdk)
+    })
+    .await
+    .map_err(join_err);
+    host.end_request(request);
+    let sdk = result??;
+    reconfigure_servers(host);
+    Ok(sdk)
+}
+
 ide_command::domain!(
     tools:
+    cpp_download,
+    cpp_download_location,
+    cpp_download_providers,
     jdk_download,
     jdk_download_location,
     jdk_download_releases,

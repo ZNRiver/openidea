@@ -28,6 +28,12 @@ options = ["23", "17", "11", "99"]
 default = "17"
 visible = { lang = "c" }
 
+[[fields]]
+id = "compiler"
+label = "Compiler:"
+type = "sdk"
+sdk = "cpp"
+
 [[files]]
 path = "CMakeLists.txt"
 when = { lang = "cpp" }
@@ -86,3 +92,6 @@ content = '''
 build/
 cmake-build-*/
 '''
+
+[settings.languages.cpp]
+toolchain = "{{compiler}}"

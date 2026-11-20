@@ -35,6 +35,7 @@ const TypeScriptPage = lazyPage("languages.typescript", () =>
   import("../languages/LanguagePages").then((m) => m.TypeScriptPage),
 );
 const ZigPage = lazyPage("languages.zig", () => import("../languages/LanguagePages").then((m) => m.ZigPage));
+const CppPage = lazyPage("languages.cpp", () => import("../languages/LanguagePages").then((m) => m.CppPage));
 
 export const LANGUAGES_GROUP = "Languages & Frameworks";
 
@@ -95,6 +96,31 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "uv",
     ],
     component: PythonInterpretersPage,
+  },
+  {
+    id: "languages.cpp",
+    projectScope: true,
+    defaultScope: "project",
+    title: "C/C++",
+    group: LANGUAGES_GROUP,
+    order: 388,
+    keywords: [
+      "c++",
+      "compiler",
+      "toolchain",
+      "mingw",
+      "gcc",
+      "g++",
+      "llvm",
+      "clang",
+      "windows sdk",
+      "xwin",
+      "msvc",
+      "visual studio",
+      "cmake",
+      "clangd",
+    ],
+    component: CppPage,
   },
   {
     id: "languages.go",

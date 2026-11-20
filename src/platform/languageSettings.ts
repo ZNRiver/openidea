@@ -169,6 +169,7 @@ export interface LanguagesValid {
   };
   ruby: { interpreter: string };
   zig: { zig: string };
+  cpp: { toolchain: string };
   node: {
     runTarget: string;
     interpreter: string;
@@ -297,6 +298,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   },
   ruby: { interpreter: "" },
   zig: { zig: "" },
+  cpp: { toolchain: "" },
   node: { runTarget: "", interpreter: "", packageManager: "", runtime: "" },
   php: { runTarget: "", interpreter: "", languageLevel: "", includePaths: [], stubs: [], phpstanConfig: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
@@ -415,6 +417,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
   const py = obj(l.python);
   const ruby = obj(l.ruby);
   const zig = obj(l.zig);
+  const cpp = obj(l.cpp);
   const node = obj(l.node);
   const php = obj(l.php);
   const rust = obj(l.rust);
@@ -442,6 +445,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     },
     ruby: { interpreter: text(ruby.interpreter, d.ruby.interpreter) },
     zig: { zig: text(zig.zig, d.zig.zig) },
+    cpp: { toolchain: text(cpp.toolchain, d.cpp.toolchain) },
     node: {
       runTarget: text(node.runTarget, ""),
       interpreter: text(node.interpreter, d.node.interpreter),

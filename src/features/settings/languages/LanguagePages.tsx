@@ -787,3 +787,26 @@ export function ZigPage() {
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// C/C++
+
+export function CppPage() {
+  return (
+    <div className={styles.page}>
+      <Section title="C/C++ toolchain">
+        <SdkRow
+          k="languages.cpp.toolchain"
+          label="C/C++ compiler toolchain"
+          kind="cpp"
+          emptyLabel="Auto"
+          emptyDetail="downloaded toolchain or compiler on PATH"
+          directory
+          browseTitle="Select C/C++ Toolchain Directory"
+          aria-label="C/C++ compiler toolchain"
+          hint="Compiler used by CMake and clangd (PATH, CC, CXX, INCLUDE, LIB). Choose Download C/C++ Compiler… to install MinGW-w64, LLVM/Clang with standalone Windows SDK (without Visual Studio), or Visual Studio Build Tools."
+        />
+      </Section>
+    </div>
+  );
+}

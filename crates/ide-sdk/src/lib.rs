@@ -10,6 +10,7 @@ pub mod apply;
 pub mod arduino;
 mod astro;
 pub mod container_python;
+pub mod cpp;
 mod discover;
 mod exec;
 pub mod go;
@@ -55,6 +56,8 @@ pub enum SdkKind {
     Ruby,
     /// Zig toolchain directories.
     Zig,
+    /// C/C++ compiler toolchains.
+    Cpp,
 }
 
 /// One installed interpreter / toolchain.

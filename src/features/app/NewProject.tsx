@@ -18,10 +18,13 @@ import {
   type Requirement,
   type ScaffoldEvent,
   type Sdk,
+  type SdkKind,
 } from "@/platform/ipc";
+import { openDownloadCppDialog } from "@/platform/cpp";
 import { useProject } from "@/platform/project";
 import { useTx, useTxTemplate } from "@/platform/i18n";
 import {
+  Button,
   Checkbox,
   Dialog,
   Icon,
@@ -127,7 +130,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
   const [dynamic, setDynamic] = useState<{ id: string; key: string; fields: Field[] } | null>(null);
   const [dynamicError, setDynamicError] = useState<string | null>(null);
   const [requirements, setRequirements] = useState<Requirement[]>([]);
-  const [jdks, setJdks] = useState<Sdk[] | null>(null);
+  const [sdksByKind, setSdksByKind] = useState<Partial<Record<SdkKind, Sdk[]>>>({});
   const [job, setJob] = useState<Job | null>(null);
   const layout = useRef<HTMLDivElement>(null);
   const [stacked, setStacked] = useState(false);
@@ -201,13 +204,33 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
     };
   }, [generator, valuesKey]);
 
-  const needsJdk = fields.some((f) => f.kind.type === "sdk" && f.kind.sdk === "jdk");
+  const requestedSdks = useRef(new Set<SdkKind>());
+  const sdkKinds = useMemo(
+    () =>
+      [...new Set(fields.filter((f): f is Field & { kind: { type: "sdk"; sdk: string } } => f.kind.type === "sdk").map((f) => f.kind.sdk as SdkKind))],
+    [fields],
+  );
   useEffect(() => {
-    if (!needsJdk || jdks) return;
-    call(commands.sdkDetect("jdk"))
-      .then(setJdks)
-      .catch(() => setJdks([]));
-  }, [needsJdk, jdks]);
+    for (const kind of sdkKinds) {
+      if (requestedSdks.current.has(kind)) continue;
+      requestedSdks.current.add(kind);
+      call(commands.sdkDetect(kind))
+        .then((list) => setSdksByKind((prev) => ({ ...prev, [kind]: list })))
+        .catch(() => setSdksByKind((prev) => ({ ...prev, [kind]: [] })));
+    }
+  }, [sdkKinds]);
+
+  const downloadCppCompiler = async (fieldId: string) => {
+    const sdk = await openDownloadCppDialog();
+    if (!sdk) return;
+    setSdksByKind((prev) => {
+      const list = prev.cpp ?? [];
+      return { ...prev, cpp: [sdk, ...list.filter((s) => s.path !== sdk.path)] };
+    });
+    setValue(fieldId, sdk.home ?? sdk.path);
+  };
+
+  const missingCppCompiler = sdkKinds.includes("cpp") && sdksByKind.cpp !== undefined && sdksByKind.cpp.length === 0;
 
   const setValue = (id: string, value: string) =>
     setEdited((all) => ({ ...all, [selected]: { ...(all[selected] ?? {}), [id]: value } }));
@@ -391,7 +414,8 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
                   field={f}
                   value={values[f.id] ?? ""}
                   onChange={(v) => setValue(f.id, v)}
-                  jdks={jdks}
+                  sdksByKind={sdksByKind}
+                  onDownloadCpp={() => void downloadCppCompiler(f.id)}
                 />
               ))}
               {loadingDynamic && (
@@ -409,6 +433,24 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
                 </>
               )}
             </div>
+            {missingCppCompiler && (
+              <div className={styles.missing}>
+                <Icon name="warning" />
+                <div className={styles.missingBody}>
+                  <span>
+                    <T>
+                      No C/C++ compiler was found on this machine. Download MinGW-w64, LLVM/Clang (with standalone
+                      Windows SDK), or Visual Studio Build Tools.
+                    </T>
+                  </span>
+                  <div className={styles.missingActions}>
+                    <Button variant="primary" size="small" onClick={() => void downloadCppCompiler("compiler")}>
+                      Download Compiler…
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
             {missing.map((r) => (
               <div key={r.program} className={styles.missing}>
                 <Icon name="warning" />
@@ -431,12 +473,14 @@ function FieldRow({
   field,
   value,
   onChange,
-  jdks,
+  sdksByKind,
+  onDownloadCpp,
 }: {
   field: Field;
   value: string;
   onChange: (value: string) => void;
-  jdks: Sdk[] | null;
+  sdksByKind: Partial<Record<SdkKind, Sdk[]>>;
+  onDownloadCpp: () => void;
 }) {
   const tx = useTx();
   const id = `np-field-${field.id}`;
@@ -481,9 +525,11 @@ function FieldRow({
       />
     );
   else if (kind.type === "sdk") {
+    const sdkKind = kind.sdk as SdkKind;
+    const list = sdksByKind[sdkKind];
     const options: SelectOption[] = [
-      { value: "", label: jdks === null ? "Detecting…" : "Automatic" },
-      ...(jdks ?? []).map((s) => ({
+      { value: "", label: list === undefined ? "Detecting…" : "Automatic" },
+      ...(list ?? []).map((s) => ({
         value: s.home ?? s.path,
         label: s.name,
         detail: s.version ?? undefined,
@@ -491,16 +537,31 @@ function FieldRow({
       })),
     ];
     if (value && !options.some((o) => o.value === value)) options.push({ value, label: value, verbatim: true });
-    control = (
-      <Select
-        id={id}
-        className={styles.fieldSelect}
-        value={value}
-        options={options}
-        onChange={onChange}
-        aria-label={tx(field.label)}
-      />
-    );
+    control =
+      sdkKind === "cpp" ? (
+        <div className={styles.sdkRow}>
+          <Select
+            id={id}
+            className={styles.fieldSelect}
+            value={value}
+            options={options}
+            onChange={onChange}
+            aria-label={tx(field.label)}
+          />
+          <Button size="small" onClick={onDownloadCpp}>
+            Download…
+          </Button>
+        </div>
+      ) : (
+        <Select
+          id={id}
+          className={styles.fieldSelect}
+          value={value}
+          options={options}
+          onChange={onChange}
+          aria-label={tx(field.label)}
+        />
+      );
   } else if (kind.type === "dependencies")
     control = <DependencyPicker id={id} groups={kind.groups} value={value} onChange={onChange} />;
   else
